@@ -1,0 +1,89 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;650&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Space Grotesk", ui-serif, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer utilities {
+  .animate-fade-in {
+    animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pipelineFlow {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+@keyframes pipelineFlowParallel {
+  0% { transform: translateX(-100%) scaleX(1); opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { transform: translateX(200%) scaleX(1.2); opacity: 0.6; }
+}
+
+@keyframes pipelinePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.45); }
+  50% { box-shadow: 0 0 0 8px rgba(22, 163, 74, 0); }
+}
+
+@keyframes pipelineParallelPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.5), 0 0 12px rgba(22, 163, 74, 0.2); }
+  50% { box-shadow: 0 0 0 6px rgba(22, 163, 74, 0), 0 0 20px rgba(22, 163, 74, 0.35); }
+}
+
+@keyframes pipelineSweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+.pipeline-flow {
+  background: linear-gradient(90deg, transparent, #16A34A, #4ade80, transparent);
+  animation: pipelineFlow 1.2s ease-in-out infinite;
+}
+
+.pipeline-flow-parallel {
+  background: linear-gradient(90deg, transparent, #16A34A, #86efac, #16A34A, transparent);
+  animation: pipelineFlowParallel 0.8s linear infinite;
+}
+
+.pipeline-node-pulse {
+  animation: pipelinePulse 1.5s ease-in-out infinite;
+}
+
+.pipeline-node-parallel {
+  animation: pipelineParallelPulse 1s ease-in-out infinite;
+}
+
+.pipeline-sweep {
+  animation: pipelineSweep 1.4s ease-in-out infinite;
+}
+
+.pipeline-connector-parallel {
+  min-width: 28px;
+  max-width: 56px;
+}
+
+@keyframes memoryEdgeFlow {
+  0% { stroke-dashoffset: 24; opacity: 0.35; }
+  50% { opacity: 0.65; }
+  100% { stroke-dashoffset: 0; opacity: 0.35; }
+}
+
+.memory-edge-flow {
+  stroke-dasharray: 6 6;
+  animation: memoryEdgeFlow 2.4s linear infinite;
+}

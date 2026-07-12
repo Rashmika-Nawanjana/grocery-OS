@@ -1,0 +1,8 @@
+{
+  "name": "plango AI",
+  "description": "Sri Lanka's first intelligent conversational family grocery OS with multi-agent RAG memory, store price optimization, and weather/traffic crisis awareness.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

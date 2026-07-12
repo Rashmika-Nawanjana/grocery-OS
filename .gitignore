@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Build / coverage
+build/
+dist/
+coverage/
+
+# Environment
+.env*
+!.env.example
+google-service-account.json
+*-service-account.json
+
+# OS / logs
+.DS_Store
+*.log
+
+# Vercel
+.vercel
