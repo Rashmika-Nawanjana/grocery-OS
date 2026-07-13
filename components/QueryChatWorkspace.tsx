@@ -5,10 +5,17 @@ import { RefreshCw, Send } from 'lucide-react';
 import type { InventoryItem, FamilyMember, AgentExecutionLog, UserMemorySnapshot, OrchestrationResult } from '@/lib/types';
 import type { QuerySession, QueryTurn } from '@/lib/chat-sessions';
 import { createEmptyTurn, getActiveTurn, sessionTitleFromPrompt } from '@/lib/chat-sessions';
+import {
+  applyClarificationAnswers,
+  detectMissingDetails,
+  extractBudgetFromPrompt,
+  type ClarificationFieldId,
+} from '@/lib/query-clarification';
 import HorizontalAgentPipeline from '@/components/HorizontalAgentPipeline';
 import AgentSourcesFooter from '@/components/AgentSourcesFooter';
 import PlanArtifactView, { PlanNarrativeSummary, shouldShowNarrativeWithPlaces } from '@/components/PlanArtifactView';
 import LocalPlacesView from '@/components/LocalPlacesView';
+import ClarificationCard from '@/components/ClarificationCard';
 
 interface QueryChatWorkspaceProps {
   session: QuerySession;
@@ -21,10 +28,10 @@ interface QueryChatWorkspaceProps {
 }
 
 const PRESETS = [
-  { title: '🥪 Daily Sandwiches', text: 'I am planning to eat sandwiches every morning from tomorrow. I dont have a fridge — how much should I buy and how often?', budget: 5000 },
-  { title: '🍽️ Already Decided', text: 'I already decided to cook dhal curry and chicken fry tonight. Find prices and best route.', budget: 4000 },
-  { title: '💡 Need Suggestions', text: 'Suggest 3 diabetic-friendly dinners for family of 4, no fish, budget LKR 5000, use home inventory', budget: 5000 },
-  { title: '🛒 Shopping Trip', text: 'I am going shopping now. Compare rice, dhal, eggs, chicken prices and check for flood warnings.', budget: 6000 },
+  { title: '🥪 Daily Sandwiches', text: 'I am planning to eat sandwiches every morning from tomorrow. I dont have a fridge — how much should I buy and how often?' },
+  { title: '🍽️ Already Decided', text: 'I already decided to cook dhal curry and chicken fry tonight. Find prices and best route.' },
+  { title: '💡 Need Suggestions', text: 'Suggest 3 diabetic-friendly dinners for family of 4, no fish, budget LKR 5000, use home inventory' },
+  { title: '🛒 Shopping Trip', text: 'I am going shopping now. Compare rice, dhal, eggs, chicken prices and check for flood warnings.' },
 ];
 
 const PENDING_LOGS: AgentExecutionLog[] = [
@@ -51,41 +58,86 @@ export default function QueryChatWorkspace({
   const [running, setRunning] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
 
   const isNewSession = session.turns.length === 0;
-  const hasStarted = session.turns.length > 0;
+  const hasStarted = session.turns.some((t) => t.status === 'complete' || t.status === 'pending');
   const panelTurn = getActiveTurn(session);
   const pipelineRunning = running || panelTurn?.status === 'pending';
+  const awaitingTurn = [...session.turns].reverse().find((t) => t.status === 'awaiting_input');
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [session.turns, running]);
 
-  const runQuery = async (text: string) => {
+  const runQuery = async (
+    text: string,
+    opts?: {
+      budgetLkr?: number;
+      displayText?: string;
+      replaceTurnId?: string;
+      baseSession?: QuerySession;
+    }
+  ) => {
     if (running || !text.trim()) return;
     setRunning(true);
     setErrorText(null);
 
-    const isFollowUp = hasStarted;
-    const turn = createEmptyTurn(text.trim(), isFollowUp);
-    turn.agentLogs = PENDING_LOGS.map((l) => ({
-      ...l,
-      message: isFollowUp && l.agentId === 'orchestrator' ? 'Processing follow-up...' : l.message,
-    }));
+    const base = opts?.baseSession ?? sessionRef.current;
+    const budgetLkr = opts?.budgetLkr ?? extractBudgetFromPrompt(text) ?? base.budgetLkr;
+    const isFollowUp = base.turns.some((t) => t.status === 'complete');
+    const displayText = opts?.displayText ?? text.trim();
 
-    const updatedSession: QuerySession = {
-      ...session,
-      title: isFollowUp ? session.title : sessionTitleFromPrompt(text),
-      turns: [...session.turns, turn],
-      activeTurnId: turn.id,
-      updatedAt: new Date().toISOString(),
-    };
+    let turn: QueryTurn;
+    let updatedSession: QuerySession;
+
+    if (opts?.replaceTurnId) {
+      const existing = base.turns.find((t) => t.id === opts.replaceTurnId);
+      turn = {
+        ...(existing ?? createEmptyTurn(displayText, isFollowUp)),
+        id: opts.replaceTurnId,
+        userText: displayText,
+        assistantText: '',
+        isFollowUp,
+        status: 'pending',
+        agentLogs: PENDING_LOGS.map((l) => ({
+          ...l,
+          message: isFollowUp && l.agentId === 'orchestrator' ? 'Processing follow-up...' : l.message,
+        })),
+        mealsResult: null,
+        clarification: undefined,
+      };
+      updatedSession = {
+        ...base,
+        title: isFollowUp ? base.title : sessionTitleFromPrompt(displayText),
+        budgetLkr,
+        turns: base.turns.map((t) => (t.id === opts.replaceTurnId ? turn : t)),
+        activeTurnId: turn.id,
+        updatedAt: new Date().toISOString(),
+      };
+    } else {
+      turn = createEmptyTurn(displayText, isFollowUp);
+      turn.agentLogs = PENDING_LOGS.map((l) => ({
+        ...l,
+        message: isFollowUp && l.agentId === 'orchestrator' ? 'Processing follow-up...' : l.message,
+      }));
+      updatedSession = {
+        ...base,
+        title: isFollowUp ? base.title : sessionTitleFromPrompt(displayText),
+        budgetLkr,
+        turns: [...base.turns, turn],
+        activeTurnId: turn.id,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
     onSessionUpdate(updatedSession);
     onSelectTurn(turn.id);
     setInput('');
 
     try {
-      const priorTurns = session.turns.filter((t) => t.status === 'complete');
+      const priorTurns = base.turns.filter((t) => t.status === 'complete');
       const conversationHistory = priorTurns.flatMap((t) => {
         const msgs: { role: 'user' | 'assistant'; text: string }[] = [{ role: 'user', text: t.userText }];
         if (t.assistantText) msgs.push({ role: 'assistant', text: t.assistantText });
@@ -108,9 +160,9 @@ export default function QueryChatWorkspace({
           prompt: text.trim(),
           inventory,
           family,
-          budgetLkr: session.budgetLkr,
+          budgetLkr,
           isFollowUp,
-          previousScenario: isFollowUp ? session.scenario ?? undefined : undefined,
+          previousScenario: isFollowUp ? base.scenario ?? undefined : undefined,
           conversationHistory: isFollowUp ? conversationHistory : undefined,
           previousRecipes: isFollowUp && previousRecipes.length ? previousRecipes : undefined,
           previousMealPlan: isFollowUp ? previousMealPlan : undefined,
@@ -182,7 +234,8 @@ export default function QueryChatWorkspace({
         };
         onSessionUpdate({
           ...updatedSession,
-          scenario: parsed.scenario ?? session.scenario,
+          scenario: parsed.scenario ?? base.scenario,
+          budgetLkr,
           turns: updatedSession.turns.map((t) => (t.id === turn.id ? completedTurn : t)),
           activeTurnId: turn.id,
           updatedAt: new Date().toISOString(),
@@ -208,9 +261,75 @@ export default function QueryChatWorkspace({
     }
   };
 
+  const beginOrClarify = (rawText: string) => {
+    if (running || !rawText.trim() || awaitingTurn) return;
+    const text = rawText.trim();
+    const isFollowUp = session.turns.some((t) => t.status === 'complete');
+    const fields = detectMissingDetails(text, {
+      isFollowUp,
+      sessionBudgetLkr: isFollowUp ? session.budgetLkr : undefined,
+      memoryBudgetLkr: memory?.defaultBudgetLkr,
+      familyCount: family.length,
+    });
+
+    if (fields.length === 0) {
+      const fromPrompt = extractBudgetFromPrompt(text);
+      void runQuery(text, { budgetLkr: fromPrompt ?? (isFollowUp ? session.budgetLkr : memory?.defaultBudgetLkr) });
+      return;
+    }
+
+    const turn = createEmptyTurn(text, isFollowUp);
+    turn.status = 'awaiting_input';
+    turn.agentLogs = [];
+    turn.clarification = { fields, pendingPrompt: text, answers: {} };
+
+    const updatedSession: QuerySession = {
+      ...session,
+      title: isFollowUp ? session.title : sessionTitleFromPrompt(text),
+      turns: [...session.turns, turn],
+      activeTurnId: turn.id,
+      updatedAt: new Date().toISOString(),
+    };
+    onSessionUpdate(updatedSession);
+    onSelectTurn(turn.id);
+    setInput('');
+    setErrorText(null);
+  };
+
+  const handleClarificationAnswer = (fieldId: ClarificationFieldId, value: number) => {
+    if (!awaitingTurn?.clarification) return;
+    const updated: QueryTurn = {
+      ...awaitingTurn,
+      clarification: {
+        ...awaitingTurn.clarification,
+        answers: { ...awaitingTurn.clarification.answers, [fieldId]: value },
+      },
+    };
+    onSessionUpdate({
+      ...session,
+      turns: session.turns.map((t) => (t.id === awaitingTurn.id ? updated : t)),
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const handleClarificationConfirm = () => {
+    if (!awaitingTurn?.clarification || running) return;
+    const { pendingPrompt, answers, fields } = awaitingTurn.clarification;
+    const missing = fields.some((f) => !answers[f.id] || (answers[f.id] as number) <= 0);
+    if (missing) return;
+
+    const { enrichedPrompt, budgetLkr } = applyClarificationAnswers(pendingPrompt, answers);
+    void runQuery(enrichedPrompt, {
+      budgetLkr: budgetLkr ?? session.budgetLkr,
+      displayText: pendingPrompt,
+      replaceTurnId: awaitingTurn.id,
+      baseSession: session,
+    });
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    runQuery(input);
+    beginOrClarify(input);
   };
 
   const handleTurnClick = (turn: QueryTurn) => {
@@ -253,10 +372,7 @@ export default function QueryChatWorkspace({
                   <button
                     key={p.title}
                     type="button"
-                    onClick={() => {
-                      onSessionUpdate({ ...session, budgetLkr: p.budget });
-                      setInput(p.text);
-                    }}
+                    onClick={() => setInput(p.text)}
                     className="text-xs bg-[#FBFBFA] hover:bg-[#DCFCE7] border border-[#BBF7D0] px-3 py-2 rounded-xl font-semibold text-[#14532D]"
                   >
                     {p.title}
@@ -288,6 +404,16 @@ export default function QueryChatWorkspace({
                   )}
                 </button>
               </div>
+
+              {turn.status === 'awaiting_input' && turn.clarification && (
+                <ClarificationCard
+                  fields={turn.clarification.fields}
+                  answers={turn.clarification.answers}
+                  onAnswer={handleClarificationAnswer}
+                  onConfirm={handleClarificationConfirm}
+                  disabled={running || turn.id !== awaitingTurn?.id}
+                />
+              )}
 
               {turn.status === 'pending' && running && session.activeTurnId === turn.id && (
                 <div className="flex justify-start">
@@ -361,29 +487,25 @@ export default function QueryChatWorkspace({
                 }
               }}
               rows={1}
-              placeholder={hasStarted ? 'Ask a follow-up...' : 'Plan meals, compare prices, optimize shopping...'}
-              className="flex-1 text-sm border border-[#BBF7D0] rounded-xl p-3 bg-white focus:outline-none focus:ring-2 focus:ring-[#16A34A] resize-none"
+              disabled={Boolean(awaitingTurn) || running}
+              placeholder={
+                awaitingTurn
+                  ? 'Answer the questions above to continue…'
+                  : hasStarted
+                    ? 'Ask a follow-up...'
+                    : 'Plan meals, compare prices, optimize shopping...'
+              }
+              className="flex-1 text-sm border border-[#BBF7D0] rounded-xl p-3 bg-white focus:outline-none focus:ring-2 focus:ring-[#16A34A] resize-none disabled:opacity-60"
             />
             <button
               type="submit"
-              disabled={running || !input.trim()}
+              disabled={running || !input.trim() || Boolean(awaitingTurn)}
               className="bg-[#16A34A] hover:bg-[#14532D] disabled:opacity-50 text-white p-3 rounded-xl transition-all"
             >
               <Send className="h-5 w-5" />
             </button>
           </div>
-          <div className="flex items-center justify-between mt-1.5 px-1 w-full">
-            <label className="text-[10px] text-[#15803D] font-mono flex items-center gap-2">
-              Budget LKR
-              <input
-                type="number"
-                value={session.budgetLkr}
-                onChange={(e) => onSessionUpdate({ ...session, budgetLkr: parseInt(e.target.value) || 5000 })}
-                className="w-20 text-xs border border-[#BBF7D0] rounded-lg px-2 py-0.5 bg-white"
-              />
-            </label>
-            <p className="text-[10px] text-[#15803D]/60">Enter to send · Shift+Enter for new line</p>
-          </div>
+          <p className="text-[10px] text-[#15803D]/60 mt-1.5 px-1 text-right">Enter to send · Shift+Enter for new line</p>
           {errorText && <p className="text-xs text-red-600 mt-2 text-center max-w-4xl mx-auto">{errorText}</p>}
         </form>
       </div>
