@@ -90,6 +90,8 @@ export interface CrisisAlert {
 export interface Recipe {
   id: string;
   name: string;
+  /** TheMealDB (or other) thumbnail URL when available. */
+  imageUrl?: string;
   ingredients: { name: string; amount: number; unit: string; source: 'inventory' | 'shopping' }[];
   instructions: string[];
   prepTimeMin: number;
@@ -249,7 +251,7 @@ export interface UserMemorySnapshot {
   homeArea: string;
   entries: {
     id: string;
-    category: 'preference' | 'dietary' | 'store' | 'budget' | 'location' | 'dish' | 'avoid' | 'fact';
+    category: 'preference' | 'dietary' | 'store' | 'budget' | 'location' | 'dish' | 'avoid' | 'fact' | 'meal_role';
     key: string;
     value: string;
     source: 'user' | 'inferred' | 'system';
@@ -274,6 +276,12 @@ export interface OrchestrationRequest {
   previousMealPlan?: Pick<MealPlanResponse, 'totalBudgetSpent' | 'shoppingList' | 'mealRoutineMeta' | 'recipes'>;
   /** Persistent user preferences and learned knowledge. */
   memory?: UserMemorySnapshot;
+  /** Structured answers from the pre-plan decision tree (cook / order / eat out / shop). */
+  clarificationContext?: {
+    mealMode?: 'cook_pantry' | 'cook_shop' | 'order' | 'eat_out';
+    cookEffort?: 'quick' | 'normal';
+    budgetLkr?: number;
+  };
 }
 
 export interface OrchestrationResult {
@@ -295,6 +303,12 @@ export interface OrchestrationResult {
   /** Google Maps local results when user asks about restaurants / eat out / nearby places. */
   localBusinesses?: LocalBusiness[];
   placesQuery?: string;
+  /** Meal cook/buy roles resolved this turn — used for memory learning. */
+  mealComponents?: {
+    name: string;
+    role: 'cook' | 'buy_ready' | 'ingredient';
+    reason: string;
+  }[];
 }
 
 export interface AgentContext {
@@ -304,6 +318,8 @@ export interface AgentContext {
   scenario: UserScenario;
   budgetLkr: number;
   inventory: InventoryItem[];
+  /** Ranked pantry subset for prompts — matching still uses full `inventory`. */
+  relevantPantry?: InventoryItem[];
   family: FamilyMember[];
   decidedItems?: string[];
   recipeNames?: string[];
@@ -313,6 +329,20 @@ export interface AgentContext {
   memoryContext?: string;
   previousMealPlan?: Pick<MealPlanResponse, 'totalBudgetSpent' | 'shoppingList' | 'mealRoutineMeta' | 'recipes'>;
   memoryEntries?: UserMemorySnapshot['entries'];
+  mealMode?: 'cook_pantry' | 'cook_shop' | 'order' | 'eat_out';
+  cookEffort?: 'quick' | 'normal';
+  /** Parsed cook-vs-buy roles for the meal (e.g. cook dhal, buy bread). */
+  mealComponents?: {
+    name: string;
+    role: 'cook' | 'buy_ready' | 'ingredient';
+    reason: string;
+    buyQty?: number;
+    buyUnit?: string;
+  }[];
+  /** Recently liked dishes from memory — bias recipe selection. */
+  likedDishes?: string[];
+  /** Preferred stores from memory — bias shopping list. */
+  preferredStores?: string[];
 }
 
 export interface MiroFishWorkflowStep {

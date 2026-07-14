@@ -51,6 +51,39 @@ interface SummaryInput {
   isCrisisQuestion?: boolean;
   isEnvironmentOnly?: boolean;
   outputMode?: 'meal_plan' | 'grocery_order' | 'dine_out' | 'price_lookup';
+  mealMode?: 'cook_pantry' | 'cook_shop' | 'order' | 'eat_out';
+  cookEffort?: 'quick' | 'normal';
+}
+
+/** Follow-up choices shown at the end of every final meal answer. */
+export function nextStepChoices(input: Pick<SummaryInput, 'outputMode' | 'mealMode' | 'isDineOutRequest' | 'isPriceLookup' | 'isEnvironmentOnly'>): string[] {
+  if (input.isEnvironmentOnly || input.isPriceLookup) return [];
+
+  const mode = input.mealMode;
+  if (mode === 'order' || mode === 'eat_out' || input.isDineOutRequest || input.outputMode === 'dine_out') {
+    return ['Pick a place', 'Switch to cook at home', 'Change budget'];
+  }
+  if (mode === 'cook_shop' || input.outputMode === 'grocery_order') {
+    return ['Build shopping list', 'Cook with pantry only', 'Compare prices'];
+  }
+  if (mode === 'cook_pantry') {
+    return ['Start cooking this', 'Order ingredients for gaps', 'Switch to eat out'];
+  }
+  return ['Order ingredients', 'Switch to eat out', 'Suggest something else'];
+}
+
+function formatNextStepBlock(input: SummaryInput): string {
+  const choices = nextStepChoices(input);
+  if (!choices.length) return '';
+  return `\n\nNext steps: ${choices.join(' · ')}`;
+}
+
+function withNextSteps(text: string, input: SummaryInput): string {
+  if (!text.trim()) return text;
+  if (/next steps:/i.test(text)) return text;
+  const block = formatNextStepBlock(input);
+  if (!block) return text;
+  return `${text.trimEnd()}${block}`;
 }
 
 /** Single source of truth passed to summary — orchestrator decision, not raw agent dumps. */
@@ -88,6 +121,11 @@ function buildOrchestratorBrief(input: SummaryInput): OrchestratorBrief {
     instructSummary = `Recommend cooking: ${showRecipeNames.join(', ')}. Use shopping list prices. Sri Lankan family context.`;
   }
 
+  const choices = nextStepChoices(input);
+  if (choices.length) {
+    instructSummary += ` End with exactly one line: "Next steps: ${choices.join(' · ')}".`;
+  }
+
   return {
     outputMode: input.outputMode ?? 'meal_plan',
     primaryAction: input.planCuration?.primaryAction ?? input.budgetDecision?.recommendation,
@@ -114,6 +152,17 @@ function formatCuratedMealSummary(input: SummaryInput): string {
     lines.push(`For dinner, I suggest **${input.recipes[0].name}**.`);
   } else if (input.recipes.length) {
     lines.push(`Here ${input.recipes.length === 1 ? 'is' : 'are'} ${input.recipes.length} option${input.recipes.length > 1 ? 's' : ''} from your pantry and budget:`);
+  }
+
+  // Surface cook-vs-buy split when present in recipe reason
+  const buyReadyNote = input.recipes
+    .map((r) => r.reasonForSelection)
+    .find((t) => /buy ready:/i.test(t));
+  if (buyReadyNote && /buy ready:/i.test(buyReadyNote)) {
+    const m = buyReadyNote.match(/buy ready:\s*([^.]+)/i);
+    if (m) {
+      lines.push(`Cook the curry at home · Buy ready from the shop: ${m[1].trim()}.`);
+    }
   }
 
   if (input.planCuration?.weatherContext) {
@@ -146,12 +195,25 @@ function formatCuratedMealSummary(input: SummaryInput): string {
     lines.push(`Not shown: ${brief.hiddenRecipeNames.join(', ')} — skipped (budget, weather, or not Sri Lankan family-friendly).`);
   }
 
+  const home = homeItemsUsed(input.recipes);
+  if (input.relevantPantry?.length) {
+    lines.push('');
+    lines.push(
+      home.length
+        ? `Using from your pantry: ${home.join(', ')}.`
+        : `Pantry matches for this request: ${input.relevantPantry
+            .slice(0, 6)
+            .map((i) => i.item)
+            .join(', ')}.`
+    );
+  }
+
   if (input.weather) {
     lines.push('');
     lines.push(`Weather: ${input.weather.condition}, ${input.weather.temperature}°C.`);
   }
 
-  return lines.join('\n');
+  return withNextSteps(lines.join('\n'), input);
 }
 
 function formatWeatherAnswer(weather: WeatherCondition, alerts?: SpoilageAlert[]): string {
@@ -315,7 +377,7 @@ export function buildSummaryTemplate(input: SummaryInput): string {
       dineLines.push('');
       dineLines.push(`Weather: ${input.weather.condition}, ${input.weather.temperature}°C.`);
     }
-    return dineLines.join('\n');
+    return withNextSteps(dineLines.join('\n'), input);
   }
 
   if (
@@ -331,16 +393,19 @@ export function buildSummaryTemplate(input: SummaryInput): string {
   }
 
   if (input.budgetDecision && input.budgetDecision.recommendation !== 'cook_at_home') {
-    return formatBudgetDecisionSummary(
-      input.budgetDecision,
-      recipes,
-      input.localBusinesses,
-      input.planCuration
-    ).replace(/\*\*/g, '');
+    return withNextSteps(
+      formatBudgetDecisionSummary(
+        input.budgetDecision,
+        recipes,
+        input.localBusinesses,
+        input.planCuration
+      ).replace(/\*\*/g, ''),
+      input
+    );
   }
 
   if (planComparisonMeta && shoppingList.length) {
-    return formatComparisonSummary(planComparisonMeta, shoppingList).replace(/\*\*/g, '');
+    return withNextSteps(formatComparisonSummary(planComparisonMeta, shoppingList).replace(/\*\*/g, ''), input);
   }
 
   if (input.localBusinesses?.length && !input.budgetDecision) {
@@ -365,7 +430,7 @@ export function buildSummaryTemplate(input: SummaryInput): string {
     } else {
       placeLines.push('Open Google Maps links in the artifact for directions, menus, and delivery options.');
     }
-    return placeLines.join('\n');
+    return withNextSteps(placeLines.join('\n'), input);
   }
 
   if (isMealRoutinePlan && mealRoutineMeta && shoppingList.length) {
@@ -454,7 +519,7 @@ export function buildSummaryTemplate(input: SummaryInput): string {
 
   appendEnvironmentContext(lines, input);
 
-  return lines.join('\n');
+  return withNextSteps(lines.join('\n'), input);
 }
 
 function weatherNote(input: SummaryInput): string {
@@ -513,7 +578,7 @@ export async function buildOrchestratorSummary(input: SummaryInput): Promise<str
   const template = buildSummaryTemplate(input);
   if (shouldUseTemplateOnly(input)) {
     planLog('summary', 'Using template summary (skipped Gemini)');
-    return template.replace(/\*\*/g, '');
+    return withNextSteps(template.replace(/\*\*/g, ''), input);
   }
 
   planLog('summary', 'Calling Gemini for narrative summary…');
@@ -535,6 +600,7 @@ export async function buildOrchestratorSummary(input: SummaryInput): Promise<str
       )
     : '[]';
 
+  const nextChoices = nextStepChoices(input);
   const ai = await geminiText(
     `Latest user message: "${input.prompt}"${historyBlock}
 
@@ -543,6 +609,7 @@ ${JSON.stringify(brief, null, 0)}
 
 Scenario: ${input.scenario}
 Output mode: ${input.outputMode ?? 'meal_plan'}
+Meal mode: ${input.mealMode ?? 'none'}
 Is order follow-up (shop same meal): ${input.isOrderFollowUp}
 Is dine-out / order prepared food: ${input.isDineOutRequest}
 Context dish: ${input.contextDish ?? 'none'}
@@ -566,14 +633,15 @@ CRITICAL — ORCHESTRATOR DECISION JSON overrides everything else:
 - If hidden recipes exist: mention ONLY showRecipeNames. One optional line that others were skipped.
 - Sri Lankan family meals only — never push Chinese/Japanese/exotic dishes if not in showRecipeNames.
 - Quote LKR prices from shopping list when discussing cooking.
-- Weave weather when relevant. Under 180 words. No agent/pipeline jargon.`
+- Weave weather and dietary notes when relevant. Under 180 words. No agent/pipeline jargon.
+- Always end with exactly: "Next steps: ${nextChoices.length ? nextChoices.join(' · ') : 'Suggest something else · Change budget'}".`
   );
 
   const text = ai?.trim();
   if (!text || text.length < 40) {
     planLog('summary', 'Gemini response too short — using template fallback');
-    return template.replace(/\*\*/g, '');
+    return withNextSteps(template.replace(/\*\*/g, ''), input);
   }
   planLog('summary', `Gemini summary OK (${text.length} chars)`);
-  return text;
+  return withNextSteps(text, input);
 }

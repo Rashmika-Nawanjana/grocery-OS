@@ -20,7 +20,9 @@ function upsertEntry(
       ...memory,
       updatedAt: now,
       entries: memory.entries.map((e) =>
-        e.id === existing.id ? { ...e, value, source, confidence: Math.max(e.confidence, confidence), updatedAt: now } : e
+        e.id === existing.id
+          ? { ...e, value, source, confidence: Math.max(e.confidence, confidence), updatedAt: now }
+          : e
       ),
     };
   }
@@ -62,6 +64,17 @@ export function extractMemoryFromPrompt(memory: UserMemory, prompt: string): Use
     next = upsertEntry(next, 'location', 'home_area', areaMatch[1], 'inferred', 0.7);
   }
 
+  // Lowercase place fallback (e.g. "in negombo")
+  const areaLower = prompt.match(/\b(?:in|near|around|from)\s+([a-z][a-z]+)(?:\s|,|\.|$)/i);
+  if (areaLower && !next.homeArea) {
+    const place = areaLower[1];
+    if (!/home|the|my|tonight|budget|dinner|lunch/.test(place)) {
+      const titled = place.charAt(0).toUpperCase() + place.slice(1);
+      next = { ...next, homeArea: titled };
+      next = upsertEntry(next, 'location', 'home_area', titled, 'inferred', 0.55);
+    }
+  }
+
   const avoidPatterns: [RegExp, string][] = [
     [/\bno\s+fish\b|\bwithout\s+fish\b|\bfish[\s-]free\b/i, 'no fish'],
     [/\bno\s+spicy\b|\bmild\b|\bnot\s+spicy\b/i, 'no spicy'],
@@ -78,18 +91,32 @@ export function extractMemoryFromPrompt(memory: UserMemory, prompt: string): Use
     }
   }
 
-  if (/\buse\s+home\s+inventory\b|\bfrom\s+pantry\b|\bwhat\s+i\s+have\b/i.test(prompt)) {
+  if (/\buse\s+home\s+inventory\b|\bfrom\s+pantry\b|\bwhat\s+i\s+have\b|\bcook with what\b/i.test(prompt)) {
     next = upsertEntry(next, 'preference', 'use_inventory', 'Prefer using home inventory when planning', 'inferred', 0.9);
   }
 
   return next;
 }
 
-/** Learn from orchestration output (chosen recipes, scenario habits). */
+export interface MemoryExtractExtras {
+  clarificationContext?: {
+    mealMode?: 'cook_pantry' | 'cook_shop' | 'order' | 'eat_out';
+    cookEffort?: 'quick' | 'normal';
+    budgetLkr?: number;
+  };
+  mealComponents?: {
+    name: string;
+    role: 'cook' | 'buy_ready' | 'ingredient';
+    reason?: string;
+  }[];
+}
+
+/** Learn from orchestration output (roles, dishes, scenario, clarification defaults). */
 export function extractMemoryFromResult(
   memory: UserMemory,
   prompt: string,
-  result: OrchestrationResult
+  result: OrchestrationResult,
+  extras: MemoryExtractExtras = {}
 ): UserMemory {
   let next = extractMemoryFromPrompt(memory, prompt);
 
@@ -99,14 +126,14 @@ export function extractMemoryFromResult(
 
   const recipes: Recipe[] = result.data?.recipes ?? [];
   for (const recipe of recipes.slice(0, 3)) {
+    if (recipe.id === 'buy_ready_sides') continue;
     next = upsertEntry(next, 'dish', recipe.name.toLowerCase(), recipe.name, 'inferred', 0.65);
   }
 
   const store = result.traffic?.recommendedStore;
   if (store) {
-    const storeName = store.split(' ')[0];
-    if (['Keells', 'Cargills', 'Pola'].some((s) => storeName.includes(s))) {
-      const matched = ['Keells', 'Cargills', 'Pola'].find((s) => store.includes(s))!;
+    if (['Keells', 'Cargills', 'Pola'].some((s) => storeNameIncludes(store, s))) {
+      const matched = ['Keells', 'Cargills', 'Pola'].find((s) => storeNameIncludes(store, s))!;
       next = {
         ...next,
         preferredStores: [...new Set([...next.preferredStores, matched])],
@@ -121,5 +148,57 @@ export function extractMemoryFromResult(
     }
   }
 
+  // Persist cook vs buy-ready habits for next time
+  const roles = extras.mealComponents ?? result.mealComponents ?? [];
+  for (const c of roles) {
+    if (c.role !== 'cook' && c.role !== 'buy_ready') continue;
+    const key = c.name.trim().toLowerCase();
+    if (!key) continue;
+    next = upsertEntry(
+      next,
+      'meal_role',
+      key,
+      c.role,
+      'inferred',
+      c.role === 'buy_ready' ? 0.9 : 0.8
+    );
+  }
+
+  const clarify = extras.clarificationContext;
+  if (clarify?.mealMode) {
+    next = upsertEntry(next, 'preference', 'default_meal_mode', clarify.mealMode, 'inferred', 0.9);
+    if (clarify.mealMode === 'cook_pantry') {
+      next = upsertEntry(next, 'preference', 'use_inventory', 'Prefer using home inventory when planning', 'inferred', 0.9);
+    }
+  }
+  if (clarify?.cookEffort) {
+    next = upsertEntry(next, 'preference', 'default_cook_effort', clarify.cookEffort, 'inferred', 0.85);
+  }
+  if (clarify?.budgetLkr && clarify.budgetLkr >= 500) {
+    next = { ...next, defaultBudgetLkr: clarify.budgetLkr };
+    next = upsertEntry(next, 'budget', 'default', `LKR ${clarify.budgetLkr}`, 'inferred', 0.9);
+  }
+
+  // Cap meal_role + dish growth
+  next = pruneCategory(next, 'meal_role', 40);
+  next = pruneCategory(next, 'dish', 25);
+
   return next;
+}
+
+function storeNameIncludes(store: string, name: string): boolean {
+  return store.toLowerCase().includes(name.toLowerCase());
+}
+
+function pruneCategory(memory: UserMemory, category: MemoryEntry['category'], keep: number): UserMemory {
+  const ofCat = memory.entries
+    .filter((e) => e.category === category)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  if (ofCat.length <= keep) return memory;
+  const drop = new Set(ofCat.slice(keep).map((e) => e.id));
+  return {
+    ...memory,
+    entries: memory.entries.filter((e) => !drop.has(e.id)),
+    updatedAt: new Date().toISOString(),
+  };
 }

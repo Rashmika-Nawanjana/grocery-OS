@@ -13,7 +13,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import type { MealPlanResponse, StorePrice, WeatherCondition } from '@/lib/types';
-import { safeLkr } from '@/lib/services/price-units';
+import { safeLkr, priceSourceBadge } from '@/lib/services/price-units';
 import LocalPlacesView from '@/components/LocalPlacesView';
 
 interface PlanArtifactViewProps {
@@ -97,12 +97,20 @@ function PriceCompareBar({ row }: { row: StorePrice }) {
     { label: 'Pola', price: row.polaPrice, color: 'bg-[#4ADE80]' },
   ];
   const cheapest = bars.reduce((a, b) => (a.price <= b.price ? a : b));
+  const badge = priceSourceBadge(row.sourceType);
 
   return (
     <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-[10px] font-semibold text-[#14532D]">
-        <span>{row.itemName}</span>
-        <span className="font-mono text-[#15803D] opacity-80">{row.unit}</span>
+      <div className="flex items-center justify-between gap-2 text-[10px] font-semibold text-[#14532D]">
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="truncate">{row.itemName}</span>
+          {badge && (
+            <span className={`shrink-0 text-[8px] px-1.5 py-0.5 rounded-full font-mono border ${badge.className}`}>
+              {badge.label}
+            </span>
+          )}
+        </span>
+        <span className="font-mono text-[#15803D] opacity-80 shrink-0">{row.unit}</span>
       </div>
       {bars.map((b) => (
         <div key={b.label} className="flex items-center gap-2">
@@ -434,22 +442,44 @@ export default function PlanArtifactView({
             {recipes.slice(0, 3).map((r) => {
               const home = r.ingredients.filter((i) => i.source === 'inventory');
               const shop = r.ingredients.filter((i) => i.source === 'shopping');
+              const fromMealDb = /^\d+$/.test(r.id);
               return (
-                <div key={r.id} className="rounded-2xl border border-[#BBF7D0] bg-[#FBFBFA] p-4 space-y-2">
-                  <p className="font-serif font-bold text-[#14532D]">{r.name}</p>
-                  <p className="text-[10px] text-[#15803D]">
-                    ~{r.prepTimeMin + r.cookTimeMin} min · {r.assignedCook}
-                  </p>
-                  {home.length > 0 && (
-                    <p className="text-[11px] text-[#16A34A]">
-                      <span className="font-bold">From home:</span> {home.map((i) => i.name).join(', ')}
+                <div key={r.id} className="rounded-2xl border border-[#BBF7D0] bg-[#FBFBFA] overflow-hidden">
+                  {r.imageUrl ? (
+                    <div className="relative aspect-[16/10] bg-[#ECFDF5]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={r.imageUrl}
+                        alt={r.name}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                      />
+                      {fromMealDb && (
+                        <span className="absolute bottom-2 left-2 text-[9px] font-mono uppercase tracking-wider bg-white/90 text-[#14532D] px-1.5 py-0.5 rounded">
+                          TheMealDB
+                        </span>
+                      )}
+                    </div>
+                  ) : null}
+                  <div className="p-4 space-y-2">
+                    <p className="font-serif font-bold text-[#14532D]">{r.name}</p>
+                    <p className="text-[10px] text-[#15803D]">
+                      ~{r.prepTimeMin + r.cookTimeMin} min · {r.assignedCook}
+                      {!r.imageUrl && fromMealDb ? ' · TheMealDB' : ''}
                     </p>
-                  )}
-                  {shop.length > 0 && (
-                    <p className="text-[11px] text-[#15803D]">
-                      <span className="font-bold">Buy:</span> {shop.map((i) => `${i.name} (${i.amount}${i.unit})`).join(', ')}
-                    </p>
-                  )}
+                    {home.length > 0 && (
+                      <p className="text-[11px] text-[#16A34A]">
+                        <span className="font-bold">From home:</span> {home.map((i) => i.name).join(', ')}
+                      </p>
+                    )}
+                    {shop.length > 0 && (
+                      <p className="text-[11px] text-[#15803D]">
+                        <span className="font-bold">Buy:</span>{' '}
+                        {shop.map((i) => `${i.name} (${i.amount}${i.unit})`).join(', ')}
+                      </p>
+                    )}
+                  </div>
                 </div>
               );
             })}

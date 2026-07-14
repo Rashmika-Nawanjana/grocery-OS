@@ -1,7 +1,7 @@
 import type { InventoryItem, FamilyMember } from '@/lib/types';
 import { createClient } from '@/lib/supabase/server';
 import { capFamilyForAgents, MAX_FAMILY_FOR_AGENTS } from '@/lib/family/cap-family';
-import { planWarn } from '@/lib/plan-logger';
+import { planWarn, planLog } from '@/lib/plan-logger';
 import { seedInventoryWithRAG, upsertInventoryWithRAG, searchInventoryRAG } from '@/lib/rag/inventory-rag';
 import { dedupeInventory } from '@/lib/inventory-merge';
 import { DEMO_FAMILY_SEED } from '@/lib/seed/demo-family';
@@ -40,9 +40,29 @@ export async function getInventory(userId: string): Promise<InventoryItem[]> {
 }
 
 export async function getInventoryForQuery(userId: string, query: string): Promise<InventoryItem[]> {
-  const { items } = await searchInventoryRAG(userId, query, 7);
-  if (items.length) return items;
-  return getInventory(userId);
+  const full = await getInventory(userId);
+  if (!full.length) return [];
+
+  // Rank by vector RAG but never drop staples — pantry matching needs the full shelf.
+  const { items: hits, scores } = await searchInventoryRAG(userId, query, Math.min(12, full.length));
+  if (!hits.length) return full;
+
+  if (scores.length) {
+    planLog(
+      'inventory-rag',
+      `Vector RAG ranked ${hits.length}/${full.length} items`,
+      {
+        top: hits.slice(0, 5).map((item, i) => ({
+          item: item.item,
+          score: Number(scores[i]?.toFixed?.(3) ?? scores[i]),
+        })),
+      }
+    );
+  }
+
+  const hitIds = new Set(hits.map((i) => i.id));
+  const rest = full.filter((i) => !hitIds.has(i.id));
+  return [...hits, ...rest];
 }
 
 export async function getFamily(userId: string): Promise<FamilyMember[]> {

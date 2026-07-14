@@ -96,3 +96,47 @@ export function preferCatalogOverLive(catalog: StorePrice, live: StorePrice): St
   if (isPlausibleStorePrice(live, catalog)) return live;
   return { ...catalog, sourceType: catalog.sourceType || 'catalog' };
 }
+
+export type PriceSourceKind = NonNullable<StorePrice['sourceType']>;
+
+/** Short badge label for price provenance in the UI. */
+export function priceSourceBadge(sourceType?: StorePrice['sourceType']): {
+  label: string;
+  className: string;
+} | null {
+  switch (sourceType) {
+    case 'store_crawl':
+    case 'firecrawl':
+      return {
+        label: 'live crawl',
+        className: 'bg-[#DCFCE7] text-[#14532D] border-[#BBF7D0]',
+      };
+    case 'pola_wholesale':
+      return {
+        label: 'pola wholesale',
+        className: 'bg-[#DCFCE7] text-[#14532D] border-[#BBF7D0]',
+      };
+    case 'serpapi':
+      return {
+        label: 'web estimate',
+        className: 'bg-amber-50 text-amber-900 border-amber-200',
+      };
+    case 'estimate':
+      return {
+        label: 'estimate',
+        className: 'bg-amber-50 text-amber-900 border-amber-200',
+      };
+    case 'catalog':
+      return {
+        label: 'catalog',
+        className: 'bg-stone-100 text-stone-600 border-stone-200',
+      };
+    case 'unavailable':
+      return {
+        label: 'unavailable',
+        className: 'bg-stone-100 text-stone-500 border-stone-200',
+      };
+    default:
+      return null;
+  }
+}

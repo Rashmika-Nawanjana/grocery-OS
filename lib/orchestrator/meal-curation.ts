@@ -128,7 +128,9 @@ function decideShowCount(
   budgetLkr: number,
   weather: WeatherCondition,
   period: PlanCurationMeta['mealPeriod'],
-  pantrySuggestion = false
+  pantrySuggestion = false,
+  cookEffort?: 'quick' | 'normal',
+  mealMode?: 'cook_pantry' | 'cook_shop' | 'order' | 'eat_out'
 ): { primaryAction: PlanPrimaryAction; maxShow: number; headline: string } {
   const budget = Math.max(1, safeLkr(budgetLkr));
   const best = ranked[0];
@@ -138,22 +140,26 @@ function decideShowCount(
 
   const ratio = best.shopCost / budget;
   const rainy = weather.condition === 'monsoon' || weather.condition === 'rainy' || weather.rainMm >= 3;
+  const quick = cookEffort === 'quick';
+  const forcedCook = mealMode === 'cook_pantry' || mealMode === 'cook_shop';
 
   if (ratio <= 1.15) {
     const affordable = ranked.filter((r) => r.shopCost <= budget * 1.2);
-    const cap = pantrySuggestion ? 2 : 3;
+    const cap = quick ? 1 : pantrySuggestion ? 2 : 3;
     return {
       primaryAction: 'cook_at_home',
       maxShow: Math.min(cap, Math.max(1, affordable.length)),
       headline: pantrySuggestion
         ? `Best from your pantry — ${Math.min(cap, affordable.length)} Sri Lankan option(s) for dinner`
-        : `Cook at home — ${affordable.length || 1} option(s) fit your LKR ${budget} budget`,
+        : quick
+          ? `Quick cook — ${affordable[0]?.recipe.name || 'one light meal'} fits your LKR ${budget} budget`
+          : `Cook at home — ${affordable.length || 1} option(s) fit your LKR ${budget} budget`,
     };
   }
 
   if (ratio <= 1.8) {
     return {
-      primaryAction: 'grocery_shop',
+      primaryAction: mealMode === 'cook_pantry' ? 'pantry_only' : 'grocery_shop',
       maxShow: 1,
       headline: `Best option: ${best.recipe.name} (~LKR ${best.shopCost}) — small shop needed`,
     };
@@ -184,6 +190,14 @@ function decideShowCount(
     };
   }
 
+  if (forcedCook) {
+    return {
+      primaryAction: mealMode === 'cook_pantry' ? 'pantry_only' : 'grocery_shop',
+      maxShow: 1,
+      headline: `Cook choice: ${best.recipe.name} (~LKR ${best.shopCost}) — best fit under your constraints`,
+    };
+  }
+
   return {
     primaryAction: 'order_out',
     maxShow: ratio <= 2.5 && best.homeCount >= 1 ? 1 : 0,
@@ -211,12 +225,17 @@ export function curateMealPlan(input: {
   weather: WeatherCondition;
   prompt: string;
   isMealRoutine: boolean;
+  cookEffort?: 'quick' | 'normal';
+  mealMode?: 'cook_pantry' | 'cook_shop' | 'order' | 'eat_out';
 }): { recipes: Recipe[]; meta: PlanCurationMeta | undefined } {
   if (input.isMealRoutine || input.recipes.length <= 1) {
     return { recipes: input.recipes, meta: undefined };
   }
 
-  const pantrySuggestion = isPantryMealSuggestionIntent(input.prompt) || mentionsHomeInventory(input.prompt);
+  const pantrySuggestion =
+    input.mealMode === 'cook_pantry' ||
+    isPantryMealSuggestionIntent(input.prompt) ||
+    mentionsHomeInventory(input.prompt);
   const decidedCook = isDecidedCookIntent(input.prompt);
 
   const period = inferMealPeriod();
@@ -228,7 +247,7 @@ export function curateMealPlan(input: {
     );
     if (userMatched.length) {
       const ranked = rankRecipes(input.recipes, input.prices, input.budgetLkr, input.weather, period, input.prompt);
-      const curated = userMatched.slice(0, Math.min(3, userMatched.length));
+      const curated = userMatched.slice(0, Math.min(input.cookEffort === 'quick' ? 1 : 3, userMatched.length));
       const includedSet = new Set(curated.map((r) => r.id));
       return {
         recipes: curated,
@@ -252,15 +271,23 @@ export function curateMealPlan(input: {
     }
   }
 
-  const ranked = rankRecipes(input.recipes, input.prices, input.budgetLkr, input.weather, period, input.prompt).filter(
+  let ranked = rankRecipes(input.recipes, input.prices, input.budgetLkr, input.weather, period, input.prompt).filter(
     (r) => !isExoticRecipe(r.recipe)
   );
+
+  if (input.cookEffort === 'quick') {
+    const light = ranked.filter((r) => isLightMeal(r.recipe) || r.recipe.prepTimeMin + r.recipe.cookTimeMin <= 35);
+    if (light.length) ranked = [...light, ...ranked.filter((r) => !light.includes(r))];
+  }
+
   const { primaryAction, maxShow, headline } = decideShowCount(
     ranked,
     input.budgetLkr,
     input.weather,
     period,
-    pantrySuggestion
+    pantrySuggestion,
+    input.cookEffort,
+    input.mealMode
   );
 
   const includedSet = new Set(ranked.slice(0, maxShow).map((r) => r.recipe.id));

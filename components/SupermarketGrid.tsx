@@ -4,6 +4,7 @@ import { AGENT_DISPLAY_NAMES } from '@/lib/agent-display-names';
 import React, { useState } from 'react';
 import { Compass, RefreshCcw, Check, Sparkles, TrendingUp, Info } from 'lucide-react';
 import { StorePrice, WeatherCondition } from '@/lib/types';
+import { priceSourceBadge } from '@/lib/services/price-units';
 
 interface SupermarketGridProps {
   prices: StorePrice[];
@@ -143,14 +144,20 @@ export default function SupermarketGrid({ prices, setPrices, weather }: Supermar
                   <tr key={idx} className="hover:bg-[#F0FDF4]/30 transition-colors">
                     {/* Item */}
                     <td className="p-4 pl-6 font-semibold text-[#2D332D] border-r border-[#F0FDF4]">
-                      <div className="flex items-center gap-1.5 font-bold">
+                      <div className="flex items-center gap-1.5 font-bold flex-wrap">
                         <span>{item.itemName}</span>
                         <span className="text-[10px] text-[#15803D] font-mono font-bold">({item.unit})</span>
-                        {item.sourceType === 'store_crawl' && (
-                          <span className="text-[9px] bg-[#DCFCE7] text-[#14532D] px-2 py-0.5 rounded-full font-mono border border-[#BBF7D0]">
-                            live crawl
-                          </span>
-                        )}
+                        {(() => {
+                          const badge = priceSourceBadge(item.sourceType);
+                          if (!badge) return null;
+                          return (
+                            <span
+                              className={`text-[9px] px-2 py-0.5 rounded-full font-mono border ${badge.className}`}
+                            >
+                              {badge.label}
+                            </span>
+                          );
+                        })()}
                         {isTomato && isMonsoon && (
                           <span className="text-[9px] bg-red-100 text-red-800 px-2.5 py-0.5 rounded-full font-mono border border-red-200">
                             +30% Monsoon Spurge

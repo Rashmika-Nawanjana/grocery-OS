@@ -37,20 +37,35 @@ export async function runRouteOptimizer(
     }
   }
 
+  const preferred = ctx.preferredStores?.[0];
+  const preferredStore =
+    preferred && /keells/i.test(preferred)
+      ? 'Keells Super'
+      : preferred && /cargills/i.test(preferred)
+        ? 'Cargills Food City'
+        : preferred && /pola/i.test(preferred)
+          ? 'Pola (cheapest)'
+          : null;
+
   const traffic: TrafficCondition = {
-    route: 'Ratmalana (Home) → Keells Colombo 7',
+    route: preferredStore
+      ? `Home → ${preferredStore}`
+      : 'Ratmalana (Home) → Keells Colombo 7',
     status: congestion,
     estimatedTimeMin: blocked ? 110 : congestion === 'congested' ? 75 : 25,
     fuelAdjustedCostLkr: blocked ? 680 : congestion === 'congested' ? 450 : 220,
     alternativeRoute: 'Ratmalana via Attidiya → Cargills Battaramulla',
     alternativeTimeMin: 35,
-    recommendedStore: blocked || congestion === 'congested' ? 'Cargills Battaramulla' : 'Pola (cheapest)',
+    recommendedStore:
+      blocked || congestion === 'congested'
+        ? 'Cargills Battaramulla'
+        : preferredStore || 'Pola (cheapest)',
   };
 
   log.status = 'success';
   log.message =
     traffic.status === 'clear'
-      ? 'Routes clear. Pola recommended for best prices.'
+      ? `Routes clear. ${traffic.recommendedStore} recommended${preferredStore ? ' (from your preferred stores)' : ' for best prices'}.`
       : `Traffic ${traffic.status}. Redirect to ${traffic.recommendedStore} (saves ~LKR ${traffic.fuelAdjustedCostLkr - 220} fuel).`;
   log.details = traffic;
 

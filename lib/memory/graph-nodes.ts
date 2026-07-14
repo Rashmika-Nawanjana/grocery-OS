@@ -37,6 +37,7 @@ const CATEGORY_META: Record<MemoryCategory, { label: string; color: string }> = 
   dish: { label: 'Dishes', color: '#22C55E' },
   avoid: { label: 'Avoids', color: '#DC2626' },
   fact: { label: 'Facts', color: '#64748B' },
+  meal_role: { label: 'Meal roles', color: '#CA8A04' },
 };
 
 export { CATEGORY_META };

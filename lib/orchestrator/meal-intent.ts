@@ -47,16 +47,19 @@ export function isDineOutIntent(prompt: string): boolean {
   );
 }
 
-/** Dishes the user named for ordering or cooking. */
+/** Dishes the user named for ordering or cooking — not store-bought staples like bread. */
 export function extractNamedDishes(prompt: string): string[] {
   const lower = normalizeOrderTypos(prompt);
+  // Bread / yoghurt etc. are buy-ready — never treat as a dish to cook from scratch.
   if (/kottu|kothu/i.test(lower) && /fried\s*rice/i.test(lower)) {
     return ['kottu roti', 'fried rice'];
   }
   const dishes: string[] = [];
   if (/kottu|kothu/i.test(lower)) dishes.push('kottu roti');
   if (/fried\s*rice/i.test(lower)) dishes.push('fried rice');
-  if (/hoppers|appa/i.test(lower)) dishes.push('hoppers');
+  if (/hoppers|appa/i.test(lower) && /\b(make|cook|prepare|homemade)\b/i.test(lower)) {
+    dishes.push('hoppers');
+  }
   if (/dhal|dal/i.test(lower)) dishes.push('dhal curry');
   if (/biriyani|biryani/i.test(lower)) dishes.push('biryani');
   if (/chicken\s*curry/i.test(lower)) dishes.push('chicken curry');
@@ -132,11 +135,8 @@ export function isExoticRecipe(recipe: {
   dietaryTags?: string[];
 }): boolean {
   const text = `${recipe.name} ${recipe.ingredients.map((i) => i.name).join(' ')}`.toLowerCase();
-  if (recipe.dietaryTags?.includes('Imported Recipe')) {
-    if (/\b(dhal|rice|kottu|curry|hoppers|sambol|pol|fried rice)\b/i.test(text)) return false;
-    return true;
-  }
-  return /\b(shaoxing|oyster sauce|adobo|foo young|gohan|sushi|mirin|mung bean|kosher|beef stock|eggplant adobo|crispy eggplant|japanese|chinese five|pickle juice|seafood rice|spanish)\b/i.test(
+  // Reject clearly non–South-Asian fusion; allow TheMealDB Indian/British/etc. home-style meals
+  return /\b(shaoxing|oyster sauce|adobo|foo young|gohan|sushi|mirin|mung bean pancakes|kosher salt only|japanese|chinese five|pickle juice|seafood rice|spanish|mexican|italian pasta carbonara|french onion)\b/i.test(
     text
   );
 }

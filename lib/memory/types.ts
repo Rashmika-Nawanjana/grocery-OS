@@ -7,7 +7,8 @@ export type MemoryCategory =
   | 'location'
   | 'dish'
   | 'avoid'
-  | 'fact';
+  | 'fact'
+  | 'meal_role';
 
 export interface MemoryEntry {
   id: string;

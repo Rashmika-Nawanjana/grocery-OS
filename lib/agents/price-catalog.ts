@@ -40,10 +40,10 @@ export async function runPriceCatalog(
 
   log.status = liveCount > 0 ? 'success' : prices.some((p) => p.sourceType !== 'unavailable') ? 'warn' : 'warn';
   const liveNote = wantsLiveStoreCrawl(ctx.prompt)
-    ? `${liveCount} live price${liveCount > 1 ? 's' : ''} (store crawl / SerpAPI / pola wholesale).`
+    ? `${liveCount} live store crawl${liveCount === 1 ? '' : 's'} (Keells/Cargills/pola wholesale).`
     : liveCount > 0
-      ? `${liveCount} live price${liveCount > 1 ? 's' : ''} via crawlers or SerpAPI.`
-      : 'No live prices — say "live Keells prices", tap Sync, or configure FIRECRAWL/SCRAPE_DO/SERPAPI keys.';
+      ? `${liveCount} live store crawl${liveCount === 1 ? '' : 's'}.`
+      : 'No live store crawls — catalog/web estimates used. Say "live Keells prices", tap Sync, or set FIRECRAWL/SCRAPE_DO.';
   log.message = `Indexed ${prices.length} items. ${liveNote} Best pola savings on ${prices.filter((p) => p.polaPrice > 0 && p.polaPrice <= p.cargillsPrice && p.polaPrice <= p.keellsPrice).length} items.`;
   log.details = { itemCount: prices.length, items };
 

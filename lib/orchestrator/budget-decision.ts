@@ -26,6 +26,8 @@ export function evaluateBudgetDecision(input: {
   recipes: Recipe[];
   isMealRoutine: boolean;
   planCuration?: PlanCurationMeta;
+  /** Explicit mode from clarification tree — overrides cook-vs-order heuristics. */
+  mealMode?: 'cook_pantry' | 'cook_shop' | 'order' | 'eat_out';
 }): BudgetDecisionMeta {
   const budget = Math.max(1, safeLkr(input.budgetLkr, 5000));
   const bestRank = input.planCuration?.recipeRankings[0];
@@ -37,7 +39,40 @@ export function evaluateBudgetDecision(input: {
   const homeItems = homeIngredientCount(input.recipes);
   const shopItems = input.shoppingList.length;
   const tonight = isTonightMealPrompt(input.prompt);
-  const explicitShop = isExplicitShoppingIntent(input.prompt);
+  const explicitShop = isExplicitShoppingIntent(input.prompt) || input.mealMode === 'cook_shop';
+  const forcedOrder = input.mealMode === 'order' || input.mealMode === 'eat_out';
+  const forcedCook = input.mealMode === 'cook_pantry' || input.mealMode === 'cook_shop';
+
+  if (forcedOrder) {
+    return {
+      recommendation: 'order_out',
+      headline: input.mealMode === 'eat_out' ? 'Eat out — as you chose' : 'Order in — as you chose',
+      reason:
+        input.mealMode === 'eat_out'
+          ? 'You asked for restaurants nearby. Here are options within reach of your budget.'
+          : 'You asked to order prepared food. Here are nearby options within your budget.',
+      groceryTotalLkr: grocery,
+      budgetLkr: budget,
+      overByLkr: overBy,
+      spendRatio: ratio,
+      tips: ['Compare price ranges below with your budget before picking a place.'],
+    };
+  }
+
+  if (forcedCook && input.mealMode === 'cook_pantry') {
+    return {
+      recommendation: 'pantry_meal',
+      headline: 'Cook from your pantry — as you chose',
+      reason: `Using what you already have at home${shopItems ? ` (only ${shopItems} small gap item(s) if needed)` : ''}.`,
+      groceryTotalLkr: grocery,
+      budgetLkr: budget,
+      overByLkr: overBy,
+      spendRatio: ratio,
+      tips: shopItems
+        ? ['Buy only the missing items, or ask for a pantry-only swap.']
+        : ['You have what you need — start cooking.'],
+    };
+  }
 
   if (grocery <= budget * 1.15 && shopItems > 0) {
     return {
@@ -68,13 +103,14 @@ export function evaluateBudgetDecision(input: {
     };
   }
 
-  // Grocery far exceeds budget for a single meal
+  // Grocery far exceeds budget for a single meal — do not push order-out if user forced cook
   if (
     ratio >= 2 &&
     shopItems >= 3 &&
     tonight &&
     !input.isMealRoutine &&
-    !explicitShop
+    !explicitShop &&
+    !forcedCook
   ) {
     const mealName = input.recipes[0]?.name || bestRank?.name || 'this meal';
     return {
@@ -93,7 +129,23 @@ export function evaluateBudgetDecision(input: {
     };
   }
 
-  if (homeItems >= 2 && shopItems >= 4 && ratio >= 1.5) {
+  if (forcedCook && ratio >= 1.5) {
+    return {
+      recommendation: 'trim_shopping',
+      headline: 'Cook plan — trim shopping to fit budget',
+      reason: `You chose to cook. Grocery estimate LKR ${grocery.toLocaleString()} vs budget LKR ${budget.toLocaleString()}.`,
+      groceryTotalLkr: grocery,
+      budgetLkr: budget,
+      overByLkr: overBy,
+      spendRatio: ratio,
+      tips: [
+        'Swap to a simpler pantry-heavy dish.',
+        'Buy only essentials; skip optional spices tonight.',
+      ],
+    };
+  }
+
+  if (homeItems >= 2 && shopItems >= 4 && ratio >= 1.5 && !forcedCook) {
     return {
       recommendation: 'pantry_meal',
       headline: 'Use your pantry — skip the big shop tonight',
@@ -110,14 +162,16 @@ export function evaluateBudgetDecision(input: {
   }
 
   return {
-    recommendation: ratio >= 2 ? 'order_out' : 'trim_shopping',
-    headline: ratio >= 2 ? 'Over budget — consider ordering out' : 'Over budget — trim your list',
+    recommendation: !forcedCook && ratio >= 2 ? 'order_out' : 'trim_shopping',
+    headline: !forcedCook && ratio >= 2 ? 'Over budget — consider ordering out' : 'Over budget — trim your list',
     reason: `Estimated grocery spend LKR ${grocery.toLocaleString()} vs budget LKR ${budget.toLocaleString()}.`,
     groceryTotalLkr: grocery,
     budgetLkr: budget,
     overByLkr: overBy,
     spendRatio: ratio,
-    tips: ['Compare dine-out prices with the grocery total before shopping.'],
+    tips: forcedCook
+      ? ['Stick to pantry staples and the cheapest store per item.']
+      : ['Compare dine-out prices with the grocery total before shopping.'],
   };
 }
 
@@ -125,9 +179,12 @@ export function shouldAutoFetchPlacesForBudget(
   decision: BudgetDecisionMeta,
   prompt: string,
   isMealRoutine: boolean,
-  planCuration?: PlanCurationMeta
+  planCuration?: PlanCurationMeta,
+  mealMode?: 'cook_pantry' | 'cook_shop' | 'order' | 'eat_out'
 ): boolean {
   if (isMealRoutine) return false;
+  if (mealMode === 'cook_pantry' || mealMode === 'cook_shop') return false;
+  if (mealMode === 'order' || mealMode === 'eat_out') return true;
   if (isExplicitShoppingIntent(prompt)) return false;
   if (planCuration?.primaryAction === 'order_out') return true;
   return decision.recommendation === 'order_out' || decision.recommendation === 'pantry_meal';

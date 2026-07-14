@@ -1,12 +1,11 @@
 import type { OrchestrationRequest, Recipe } from '@/lib/types';
 import { wantsLocalPlacesSearch } from '@/lib/services/google-maps-places';
 import { isPriceLookupRequest } from '@/lib/agents/price-query';
-import { isGroceryOrderFollowUp, shouldReusePreviousRecipes } from '@/lib/orchestrator/intent';
+import { shouldReusePreviousRecipes } from '@/lib/orchestrator/intent';
 import {
   extractNamedDishes,
   isDineOutIntent,
   isPreparedFoodOrderIntent,
-  normalizeOrderTypos,
 } from '@/lib/orchestrator/meal-intent';
 
 export type OrchestratorOutputMode = 'meal_plan' | 'grocery_order' | 'dine_out' | 'price_lookup';
@@ -59,7 +58,10 @@ export function resolvePresentationPlan(req: OrchestrationRequest): Presentation
     };
   }
 
-  if (isDineOutIntent(req.prompt)) {
+  const mealMode = req.clarificationContext?.mealMode;
+  const dineOutFromClarification = mealMode === 'order' || mealMode === 'eat_out';
+
+  if (dineOutFromClarification || isDineOutIntent(req.prompt)) {
     const contextRecipes = req.previousRecipes?.length
       ? req.previousRecipes
       : req.previousMealPlan?.recipes ?? [];

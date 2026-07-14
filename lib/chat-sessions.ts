@@ -9,7 +9,10 @@ import type {
   UserScenario,
   WeatherCondition,
 } from '@/lib/types';
-import type { ClarificationField, ClarificationFieldId } from '@/lib/query-clarification';
+import type {
+  ClarificationAnswers,
+  ClarificationField,
+} from '@/lib/query-clarification';
 
 /** One user prompt + orchestrator run — agent output is saved per turn. */
 export interface QueryTurn {
@@ -29,11 +32,11 @@ export interface QueryTurn {
   sources: DataSource[];
   localBusinesses?: LocalBusiness[];
   placesQuery?: string;
-  /** In-chat questions (budget, servings, …) before agents run. */
+  /** In-chat questions (mode, budget, servings, …) before agents run. */
   clarification?: {
     fields: ClarificationField[];
     pendingPrompt: string;
-    answers: Partial<Record<ClarificationFieldId, number>>;
+    answers: ClarificationAnswers;
   };
 }
 

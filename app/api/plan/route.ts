@@ -53,7 +53,10 @@ async function finalizeResult(
   memoryForRequest: UserMemory | null
 ): Promise<OrchestrationResult> {
   if (memoryForRequest) {
-    const updated = extractMemoryFromResult(memoryForRequest, body.prompt, result);
+    const updated = extractMemoryFromResult(memoryForRequest, body.prompt, result, {
+      clarificationContext: body.clarificationContext,
+      mealComponents: result.mealComponents,
+    });
     if (user) {
       await saveUserMemory(user.id, updated);
     }
@@ -123,7 +126,7 @@ export async function POST(request: Request) {
       recipes: result.data.recipes.length,
       shoppingItems: result.data.shoppingList.length,
       totalLkr: result.data.totalBudgetSpent,
-      livePrices: result.prices.filter((p) => p.sourceType === 'store_crawl' || p.sourceType === 'serpapi').length,
+      livePrices: result.prices.filter((p) => p.sourceType === 'store_crawl' || p.sourceType === 'pola_wholesale').length,
     });
 
     return NextResponse.json(result);

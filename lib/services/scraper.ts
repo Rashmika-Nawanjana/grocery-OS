@@ -33,7 +33,7 @@ const BASE_CATALOG: StorePrice[] = [
 ];
 
 const CACHE_TTL_MS = 20 * 60 * 1000;
-const DEFAULT_CRAWL_TIMEOUT_MS = 8000;
+const DEFAULT_CRAWL_TIMEOUT_MS = 12_000;
 
 const priceCache = new Map<string, { price: StorePrice; expiresAt: number }>();
 
@@ -44,7 +44,7 @@ export interface FetchPricesOptions {
 }
 
 function cacheKey(item: string): string {
-  return `v3:${item.toLowerCase().trim()}`;
+  return `v4:${item.toLowerCase().trim()}`;
 }
 
 function getCached(item: string): StorePrice | null {
@@ -86,11 +86,13 @@ function extractPricesFromText(text: string, itemName: string, catalog?: StorePr
   const sorted = [...prices].sort((a, b) => a - b);
   const mid = sorted[Math.floor(sorted.length / 2)];
   const unit = catalog?.unit || 'per kg';
+  // Single web estimate — do NOT invent true per-store shelves from ratios
+  const estimate = Math.round(mid);
   return {
     itemName,
-    keellsPrice: Math.round(mid * 1.04),
-    cargillsPrice: Math.round(mid),
-    polaPrice: Math.round(mid * 0.9),
+    keellsPrice: estimate,
+    cargillsPrice: estimate,
+    polaPrice: Math.round(estimate * 0.9),
     unit,
   };
 }
@@ -99,30 +101,60 @@ async function searchSerpPrices(item: string, catalog?: StorePrice): Promise<Par
   const key = process.env.SERPAPI_KEY;
   if (!key) return null;
   try {
-    const q = encodeURIComponent(`${item} price Keells Cargills Sri Lanka LKR`);
+    const q = encodeURIComponent(`${item} price Sri Lanka supermarket LKR Keells OR Cargills`);
     const url = `https://serpapi.com/search.json?q=${q}&api_key=${key}&num=5`;
     const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
     if (!res.ok) return null;
     const data = await res.json();
     const snippets = [
       data.answer_box?.snippet,
-      ...(data.organic_results || []).map((r: { snippet?: string }) => r.snippet),
+      ...(data.organic_results || []).map((r: { snippet?: string; title?: string }) => `${r.title || ''} ${r.snippet || ''}`),
     ]
       .filter(Boolean)
       .join(' ');
+    // Require the item name (or stem) to appear near prices
+    const stem = item.toLowerCase().split(/\s+/)[0].replace(/s$/, '');
+    if (!snippets.toLowerCase().includes(stem)) return null;
     return extractPricesFromText(snippets, item, catalog);
   } catch {
     return null;
   }
 }
 
+/** Stricter catalog match — token overlap, reject weak hits. */
+function scoreCatalogMatch(query: string, catalogName: string): number {
+  const q = query
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 1);
+  const n = catalogName
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 1);
+  if (!q.length || !n.length) return 0;
+  if (catalogName.toLowerCase() === query.toLowerCase()) return 1;
+  if (catalogName.toLowerCase().includes(query.toLowerCase()) || query.toLowerCase().includes(catalogName.toLowerCase())) {
+    return 0.85;
+  }
+  let hits = 0;
+  for (const t of q) {
+    const stem = t.replace(/s$/, '');
+    if (n.some((w) => w === t || w === stem || w.startsWith(stem) || stem.startsWith(w))) hits += 1;
+  }
+  return hits / q.length;
+}
+
 function findCatalogMatch(item: string): StorePrice | undefined {
-  const lower = item.toLowerCase();
-  const token = lower.split(/\s+/)[0];
-  return BASE_CATALOG.find((b) => {
-    const name = b.itemName.toLowerCase();
-    return name.includes(token) || token.includes(name.split(' ').pop() || '') || name.includes(lower) || lower.includes(name.split(' ')[0]);
-  });
+  let best: { score: number; row: StorePrice } | null = null;
+  for (const row of BASE_CATALOG) {
+    const score = scoreCatalogMatch(item, row.itemName);
+    if (!best || score > best.score) best = { score, row };
+  }
+  // Require a solid match — avoid "oil" → random coconut oil from one shared token alone when score low
+  if (!best || best.score < 0.5) return undefined;
+  return best.row;
 }
 
 function fromCatalog(item: string, base: StorePrice): StorePrice {
@@ -148,15 +180,17 @@ function fromSerp(item: string, serp: Partial<StorePrice>, base?: StorePrice): S
     itemName: item,
     keellsPrice: serp.keellsPrice!,
     cargillsPrice: serp.cargillsPrice ?? serp.keellsPrice!,
-    polaPrice: serp.polaPrice ?? Math.round(serp.keellsPrice! * 0.88),
+    polaPrice: serp.polaPrice ?? Math.round(serp.keellsPrice! * 0.9),
     unit: serp.unit || base?.unit || 'per kg',
+    // Web snippet estimate — not a verified store shelf price
     sourceType: 'serpapi',
     sourceUrl: googlePriceSearchUrl(item),
   };
 }
 
 async function persistIfLive(price: StorePrice): Promise<void> {
-  if (price.sourceType && !['unavailable', 'estimate', 'catalog'].includes(price.sourceType)) {
+  // Persist verified store / wholesale lookups only — not catalog or web estimates
+  if (price.sourceType === 'store_crawl' || price.sourceType === 'pola_wholesale' || price.sourceType === 'firecrawl') {
     await upsertPriceCache(price);
   }
 }
@@ -168,7 +202,7 @@ async function fetchPriceForItem(
   const cached = getCached(item);
   if (cached) {
     planLog('prices', `cache hit — ${item} (${cached.sourceType})`);
-    const live = cached.sourceType === 'store_crawl' || cached.sourceType === 'serpapi' || cached.sourceType === 'pola_wholesale';
+    const live = cached.sourceType === 'store_crawl' || cached.sourceType === 'pola_wholesale';
     return { price: { ...cached, itemName: item }, live };
   }
 
@@ -205,10 +239,11 @@ async function fetchPriceForItem(
       setCached(item, catalogPrice);
       return { price: catalogPrice, live: false };
     }
-    planLog('prices', `serpapi — ${item} → ~LKR ${price.polaPrice} (${price.unit})`);
+    planLog('prices', `serpapi web-estimate — ${item} → ~LKR ${price.keellsPrice} (${price.unit})`);
     setCached(item, price);
     await persistIfLive(price);
-    return { price, live: true };
+    // SerpAPI is an estimate, not a verified store crawl
+    return { price, live: false };
   }
 
   if (canCrawl && !shouldTryCrawl) {

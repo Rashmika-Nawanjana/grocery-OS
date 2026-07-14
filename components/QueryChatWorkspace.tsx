@@ -7,8 +7,12 @@ import type { QuerySession, QueryTurn } from '@/lib/chat-sessions';
 import { createEmptyTurn, getActiveTurn, sessionTitleFromPrompt } from '@/lib/chat-sessions';
 import {
   applyClarificationAnswers,
+  clarificationComplete,
   detectMissingDetails,
   extractBudgetFromPrompt,
+  type ClarificationAnswerValue,
+  type ClarificationAnswers,
+  type ClarificationContext,
   type ClarificationFieldId,
 } from '@/lib/query-clarification';
 import HorizontalAgentPipeline from '@/components/HorizontalAgentPipeline';
@@ -78,6 +82,7 @@ export default function QueryChatWorkspace({
       displayText?: string;
       replaceTurnId?: string;
       baseSession?: QuerySession;
+      clarificationContext?: ClarificationContext;
     }
   ) => {
     if (running || !text.trim()) return;
@@ -167,6 +172,7 @@ export default function QueryChatWorkspace({
           previousRecipes: isFollowUp && previousRecipes.length ? previousRecipes : undefined,
           previousMealPlan: isFollowUp ? previousMealPlan : undefined,
           memory,
+          clarificationContext: opts?.clarificationContext,
           stream: true,
         }),
       });
@@ -261,20 +267,49 @@ export default function QueryChatWorkspace({
     }
   };
 
+  const clarificationOpts = (text: string, isFollowUp: boolean, answers?: ClarificationAnswers) => ({
+    isFollowUp,
+    sessionBudgetLkr: isFollowUp ? session.budgetLkr : undefined,
+    memoryBudgetLkr: memory?.defaultBudgetLkr,
+    familyCount: family.length,
+    answers,
+  });
+
+  const finishClarification = (
+    turn: QueryTurn,
+    pendingPrompt: string,
+    answers: ClarificationAnswers,
+    baseSession: QuerySession
+  ) => {
+    const { enrichedPrompt, budgetLkr, clarificationContext } = applyClarificationAnswers(
+      pendingPrompt,
+      answers
+    );
+    void runQuery(enrichedPrompt, {
+      budgetLkr: budgetLkr ?? baseSession.budgetLkr,
+      displayText: pendingPrompt,
+      replaceTurnId: turn.id,
+      baseSession,
+      clarificationContext,
+    });
+  };
+
   const beginOrClarify = (rawText: string) => {
     if (running || !rawText.trim() || awaitingTurn) return;
     const text = rawText.trim();
     const isFollowUp = session.turns.some((t) => t.status === 'complete');
-    const fields = detectMissingDetails(text, {
-      isFollowUp,
-      sessionBudgetLkr: isFollowUp ? session.budgetLkr : undefined,
-      memoryBudgetLkr: memory?.defaultBudgetLkr,
-      familyCount: family.length,
-    });
+    const fields = detectMissingDetails(text, clarificationOpts(text, isFollowUp));
 
     if (fields.length === 0) {
       const fromPrompt = extractBudgetFromPrompt(text);
-      void runQuery(text, { budgetLkr: fromPrompt ?? (isFollowUp ? session.budgetLkr : memory?.defaultBudgetLkr) });
+      const { clarificationContext } = applyClarificationAnswers(text, {});
+      void runQuery(text, {
+        budgetLkr: fromPrompt ?? (isFollowUp ? session.budgetLkr : memory?.defaultBudgetLkr),
+        clarificationContext:
+          clarificationContext.mealMode || clarificationContext.cookEffort
+            ? clarificationContext
+            : undefined,
+      });
       return;
     }
 
@@ -296,18 +331,65 @@ export default function QueryChatWorkspace({
     setErrorText(null);
   };
 
-  const handleClarificationAnswer = (fieldId: ClarificationFieldId, value: number) => {
-    if (!awaitingTurn?.clarification) return;
-    const updated: QueryTurn = {
-      ...awaitingTurn,
-      clarification: {
-        ...awaitingTurn.clarification,
-        answers: { ...awaitingTurn.clarification.answers, [fieldId]: value },
-      },
+  const handleClarificationAnswer = (fieldId: ClarificationFieldId, value: ClarificationAnswerValue) => {
+    if (!awaitingTurn?.clarification || running) return;
+    const { pendingPrompt, fields: currentFields } = awaitingTurn.clarification;
+    const isFollowUp = awaitingTurn.isFollowUp;
+    const answeringField = currentFields.find((f) => f.id === fieldId);
+    const answers: ClarificationAnswers = {
+      ...awaitingTurn.clarification.answers,
+      [fieldId]: value,
     };
+    const nextFields = detectMissingDetails(pendingPrompt, clarificationOpts(pendingPrompt, isFollowUp, answers));
+
+    // Choice taps advance/finish immediately; numeric waits for Confirm.
+    if (answeringField?.kind === 'choice') {
+      if (nextFields.length === 0 || clarificationComplete(nextFields, answers)) {
+        const updatedSession: QuerySession = {
+          ...session,
+          turns: session.turns.map((t) =>
+            t.id === awaitingTurn.id
+              ? {
+                  ...awaitingTurn,
+                  clarification: {
+                    fields: nextFields.length ? nextFields : currentFields,
+                    pendingPrompt,
+                    answers,
+                  },
+                }
+              : t
+          ),
+          updatedAt: new Date().toISOString(),
+        };
+        onSessionUpdate(updatedSession);
+        finishClarification(awaitingTurn, pendingPrompt, answers, updatedSession);
+        return;
+      }
+
+      onSessionUpdate({
+        ...session,
+        turns: session.turns.map((t) =>
+          t.id === awaitingTurn.id
+            ? { ...awaitingTurn, clarification: { fields: nextFields, pendingPrompt, answers } }
+            : t
+        ),
+        updatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // Keep the current number field visible until Confirm — do not drop it from
+    // `fields` just because an answer was typed (that made the input disappear).
     onSessionUpdate({
       ...session,
-      turns: session.turns.map((t) => (t.id === awaitingTurn.id ? updated : t)),
+      turns: session.turns.map((t) =>
+        t.id === awaitingTurn.id
+          ? {
+              ...awaitingTurn,
+              clarification: { fields: currentFields, pendingPrompt, answers },
+            }
+          : t
+      ),
       updatedAt: new Date().toISOString(),
     });
   };
@@ -315,16 +397,25 @@ export default function QueryChatWorkspace({
   const handleClarificationConfirm = () => {
     if (!awaitingTurn?.clarification || running) return;
     const { pendingPrompt, answers, fields } = awaitingTurn.clarification;
-    const missing = fields.some((f) => !answers[f.id] || (answers[f.id] as number) <= 0);
-    if (missing) return;
+    if (!clarificationComplete(fields, answers)) return;
 
-    const { enrichedPrompt, budgetLkr } = applyClarificationAnswers(pendingPrompt, answers);
-    void runQuery(enrichedPrompt, {
-      budgetLkr: budgetLkr ?? session.budgetLkr,
-      displayText: pendingPrompt,
-      replaceTurnId: awaitingTurn.id,
-      baseSession: session,
-    });
+    const isFollowUp = awaitingTurn.isFollowUp;
+    const nextFields = detectMissingDetails(pendingPrompt, clarificationOpts(pendingPrompt, isFollowUp, answers));
+
+    if (nextFields.length > 0 && !clarificationComplete(nextFields, answers)) {
+      onSessionUpdate({
+        ...session,
+        turns: session.turns.map((t) =>
+          t.id === awaitingTurn.id
+            ? { ...awaitingTurn, clarification: { fields: nextFields, pendingPrompt, answers } }
+            : t
+        ),
+        updatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    finishClarification(awaitingTurn, pendingPrompt, answers, session);
   };
 
   const handleSubmit = (e: React.FormEvent) => {

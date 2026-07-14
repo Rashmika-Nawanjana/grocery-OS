@@ -20,7 +20,7 @@ import type {
 import { geminiJson, intentSchema } from '@/lib/services/gemini';
 import { buildOrchestratorSummary } from '@/lib/orchestrator/summary';
 import { collectOrchestrationSources } from '@/lib/data-sources';
-import { buildMemoryContext, mergeBudgetWithMemory } from '@/lib/memory/context';
+import { buildMemoryContext, mergeBudgetWithMemory, getMemoryPreference, prefersHomeInventory, likedDishNames } from '@/lib/memory/context';
 import { runPriceCatalog, extractItemsFromPrompt, isPriceLookupRequest } from '@/lib/agents/price-catalog';
 import { runRecipeCompiler } from '@/lib/agents/recipe-compiler';
 import { runRouteOptimizer } from '@/lib/agents/route-optimizer';
@@ -64,6 +64,10 @@ import {
   detectSandwichFillingVariant,
 } from '@/lib/orchestrator/meal-routine';
 import { earlyPriceItems, tryFastPathIntent } from '@/lib/orchestrator/fast-path';
+import {
+  describeMealComponentPlan,
+  resolveMealComponents,
+} from '@/lib/orchestrator/meal-components';
 import { planAgentLog, planLog, planTimed, planWarn } from '@/lib/plan-logger';
 import { fetchWeather } from '@/lib/services/weather';
 import { fetchCrisisNews } from '@/lib/services/news';
@@ -176,10 +180,18 @@ function buildShoppingList(
   prices: StorePrice[],
   weather: WeatherCondition,
   trafficStore?: string,
-  spoilageAlerts: SpoilageAlert[] = []
+  spoilageAlerts: SpoilageAlert[] = [],
+  preferredStores: string[] = []
 ): ShoppingListItem[] {
   const list: ShoppingListItem[] = [];
   const seen = new Set<string>();
+  const prefer =
+    preferredStores.find((s) => /keells|cargills|pola/i.test(s)) ||
+    (trafficStore?.includes('Cargills')
+      ? 'Cargills'
+      : trafficStore?.includes('Keells')
+        ? 'Keells'
+        : undefined);
 
   for (const recipe of recipes) {
     for (const ing of recipe.ingredients) {
@@ -191,11 +203,12 @@ function buildShoppingList(
       const priceRow = prices.find(
         (p) => p.itemName.toLowerCase().includes(key) || key.includes(p.itemName.toLowerCase().split(' ')[0])
       );
-      const store = trafficStore?.includes('Cargills')
-        ? 'Cargills'
-        : priceRow
-          ? cheapestStore(priceRow)
-          : 'Pola';
+      let store: 'Keells' | 'Cargills' | 'Pola' = 'Pola';
+      if (prefer && /cargills/i.test(prefer)) store = 'Cargills';
+      else if (prefer && /keells/i.test(prefer)) store = 'Keells';
+      else if (prefer && /pola/i.test(prefer)) store = 'Pola';
+      else if (trafficStore?.includes('Cargills')) store = 'Cargills';
+      else if (priceRow) store = cheapestStore(priceRow);
 
       const rawUnit = priceRow ? storeUnitPrice(priceRow, store) : 0.5;
       const unitPrice =
@@ -333,6 +346,23 @@ export async function runOrchestration(
   }
   emit();
 
+  const mealRoleResolution = await resolveMealComponents(req.prompt, req.memory);
+  const rememberedMealMode = getMemoryPreference(req.memory, 'default_meal_mode') as
+    | 'cook_pantry'
+    | 'cook_shop'
+    | 'order'
+    | 'eat_out'
+    | undefined;
+  const rememberedEffort = getMemoryPreference(req.memory, 'default_cook_effort') as
+    | 'quick'
+    | 'normal'
+    | undefined;
+  const effectiveMealMode =
+    req.clarificationContext?.mealMode ||
+    rememberedMealMode ||
+    (prefersHomeInventory(req.memory) ? 'cook_pantry' : undefined);
+  const effectiveCookEffort = req.clarificationContext?.cookEffort || rememberedEffort;
+
   let ctx: AgentContext = {
     prompt: agentPrompt,
     userPrompt: req.prompt,
@@ -347,7 +377,20 @@ export async function runOrchestration(
     memoryContext,
     previousMealPlan: req.previousMealPlan,
     memoryEntries: req.memory?.entries,
+    mealMode: effectiveMealMode,
+    cookEffort: effectiveCookEffort,
+    mealComponents: mealRoleResolution.components,
+    likedDishes: likedDishNames(req.memory),
+    preferredStores: req.memory?.preferredStores ?? [],
   };
+
+  const mealComponentPlan = describeMealComponentPlan(ctx.mealComponents ?? []);
+  if (mealComponentPlan) {
+    planLog(scope, `Meal roles (${mealRoleResolution.source}): ${mealComponentPlan}`, {
+      unsure: mealRoleResolution.unsure,
+      mealMode: effectiveMealMode,
+    });
+  }
 
   let recipes: Recipe[] =
     presentation.mode === 'dine_out'
@@ -411,9 +454,24 @@ export async function runOrchestration(
     }
   }
 
-  const [inventoryResult, crisisResult, sensoryResult, dietaryResult, recipeResult, earlyPriceResult] =
+  // Inventory RAG first so recipe-compiler gets ranked pantry (not a parallel race).
+  const inventoryResult = await runAgent(
+    'inventory-rag',
+    agentsToRun.has('inventory-rag'),
+    'Home inventory RAG',
+    () => runInventoryRAG(ctx)
+  );
+  if (inventoryResult) {
+    relevantPantry = inventoryResult.relevantItems;
+    if (inventoryResult.items.length) inventory = inventoryResult.items;
+    ctx = { ...ctx, inventory, relevantPantry };
+    planLog(scope, `Pantry ranked for agents — relevant=${relevantPantry.length}, full=${inventory.length}`, {
+      relevant: relevantPantry.slice(0, 6).map((i) => i.item),
+    });
+  }
+
+  const [crisisResult, sensoryResult, dietaryResult, recipeResult, earlyPriceResult] =
     await Promise.all([
-      runAgent('inventory-rag', agentsToRun.has('inventory-rag'), 'Home inventory RAG', () => runInventoryRAG(ctx)),
       runAgent('crisis-agent', agentsToRun.has('crisis-agent'), 'Crisis intelligence', () => runCrisisAgent(ctx)),
       runAgent('sensory-decay', agentsToRun.has('sensory-decay'), 'Weather & spoilage', () => runSensoryDecay(ctx)),
       runAgent('dietary-guard', agentsToRun.has('dietary-guard'), 'Dietary guard', () => runDietaryGuard(ctx)),
@@ -431,10 +489,6 @@ export async function runOrchestration(
       ),
     ]);
 
-  if (inventoryResult) {
-    relevantPantry = inventoryResult.relevantItems;
-    if (inventoryResult.items.length) inventory = inventoryResult.items;
-  }
   if (crisisResult) {
     crisis = crisisResult.crisis;
   }
@@ -449,7 +503,7 @@ export async function runOrchestration(
     recipes = recipeResult.recipes;
   }
 
-  ctx = { ...ctx, inventory };
+  ctx = { ...ctx, inventory, relevantPantry };
 
   const itemNames = recipes.flatMap((r) => r.ingredients.filter((i) => i.source === 'shopping').map((i) => i.name));
   const priceQueryItems = isPriceLookupRequest(req.prompt) ? extractItemsFromPrompt(req.prompt) : [];
@@ -507,6 +561,8 @@ export async function runOrchestration(
           weather,
           prompt: req.prompt,
           isMealRoutine: isRoutine,
+          cookEffort: ctx.cookEffort,
+          mealMode: ctx.mealMode,
         });
   recipes = presentation.showRecipes ? curatedRecipes : [];
   const planCuration =
@@ -533,7 +589,14 @@ export async function runOrchestration(
 
   const bestRank = planCuration?.recipeRankings[0];
   const shoppingList = presentation.showShoppingList
-    ? buildShoppingList(recipes, prices, weather, traffic.recommendedStore, spoilageAlerts)
+    ? buildShoppingList(
+        recipes,
+        prices,
+        weather,
+        traffic.recommendedStore,
+        spoilageAlerts,
+        req.memory?.preferredStores ?? []
+      )
     : [];
   const listTotal = shoppingList.reduce((s, i) => s + safeLkr(i.totalPrice), 0);
   const cookEstimate = estimateCookCostForDish(presentation.contextDish);
@@ -546,7 +609,11 @@ export async function runOrchestration(
   const inventorySavings = calcInventorySavings(recipes, prices);
   const savingsVsSingleStore = calcMultiStoreSavings(shoppingList, prices);
 
-  const foodDelivery = isDineOutIntent(req.prompt);
+  const foodDelivery =
+    presentation.mode === 'dine_out' ||
+    isDineOutIntent(req.prompt) ||
+    ctx.mealMode === 'order' ||
+    ctx.mealMode === 'eat_out';
   const weatherQ = isWeatherQuestion(req.prompt);
   const crisisQ = isCrisisNewsQuestion(req.prompt);
   const envOnly = isEnvironmentOnlyQuestion(req.prompt);
@@ -560,6 +627,7 @@ export async function runOrchestration(
     recipes,
     isMealRoutine: isRoutine,
     planCuration,
+    mealMode: ctx.mealMode,
   });
   budgetDecision = alignBudgetWithCuration(budgetDecision, planCuration);
 
@@ -576,7 +644,13 @@ export async function runOrchestration(
   const needsPlaces =
     presentation.showPlaces ||
     wantsLocalPlacesSearch(req.prompt) ||
-    shouldAutoFetchPlacesForBudget(budgetDecision, req.prompt, isRoutine, planCuration);
+    shouldAutoFetchPlacesForBudget(
+      budgetDecision,
+      req.prompt,
+      isRoutine,
+      planCuration,
+      ctx.mealMode
+    );
 
   if (needsPlaces) {
     const placesContextRecipes =
@@ -693,6 +767,8 @@ export async function runOrchestration(
       budgetDecision,
       planCuration,
       outputMode: presentationMode,
+      mealMode: ctx.mealMode,
+      cookEffort: ctx.cookEffort,
       weather,
       crisis,
       spoilageAlerts,
@@ -747,6 +823,11 @@ export async function runOrchestration(
     sources,
     localBusinesses: localBusinesses.length ? localBusinesses : undefined,
     placesQuery: placesQuery || undefined,
+    mealComponents: mealRoleResolution.components.map((c) => ({
+      name: c.name,
+      role: c.role,
+      reason: c.reason,
+    })),
   };
 }
 

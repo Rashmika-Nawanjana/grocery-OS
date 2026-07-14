@@ -32,7 +32,7 @@ export function collectOrchestrationSources(input: {
     add({
       agentId: 'inventory-rag',
       agentName: 'Agent 1: Home Inventory RAG',
-      label: 'Supabase inventory + pgvector embeddings',
+      label: 'Supabase pantry (pgvector rank + keyword relevance)',
       url: input.supabaseUrl || undefined,
       kind: 'database',
     });
@@ -42,14 +42,14 @@ export function collectOrchestrationSources(input: {
     add({
       agentId: 'recipe-compiler',
       agentName: 'Agent 2: Recipe Compiler',
-      label: 'TheMealDB recipe search API',
-      url: `${THEMEALDB}/api.php`,
+      label: 'TheMealDB recipe API (search + ingredient + area)',
+      url: `${THEMEALDB}/api/json/v1/1/`,
       kind: 'api',
     });
     add({
       agentId: 'recipe-compiler',
       agentName: 'Agent 2: Recipe Compiler',
-      label: 'Vertex AI Gemini meal planning (verify recipes & quantities)',
+      label: 'Vertex AI Gemini — pick best TheMealDB meals for pantry',
       url: VERTEX_DOC,
       kind: 'ai',
     });
