@@ -369,6 +369,7 @@ export async function runOrchestration(
     scenario,
     budgetLkr,
     inventory,
+    userId: req.userId,
     family,
     decidedItems: intent.decidedItems,
     conversationHistory: req.conversationHistory,

@@ -2,18 +2,6 @@ import type { InventoryItem } from '@/lib/types';
 import { embedText, cosineSimilarity } from '@/lib/services/embeddings';
 import { createClient } from '@/lib/supabase/server';
 
-const SUGGESTED_USE: Record<string, string[]> = {
-  rice: ['Dhal + Rice', 'Fried Rice', 'Chicken Rice'],
-  tomato: ['Vegetable Fry', 'Tomato Sambol', 'Chicken Curry'],
-  dhal: ['Dhal Curry', 'Lentil Soup', 'Parippu'],
-  onion: ['Curry', 'Sambol', 'Tempering'],
-  fish: ['Fish Curry', 'Fish Fry'],
-  egg: ['Egg Curry', 'Omelette', 'Egg Hopper'],
-  oil: ['Frying', 'Tempering', 'Curries'],
-  chicken: ['Chicken Curry', 'Roast Chicken'],
-  carrot: ['Vegetable Fry', 'Soup'],
-};
-
 export const DUMMY_INVENTORY: Omit<InventoryItem, 'id'>[] = [
   { item: 'White Rice', quantity: 500, unit: 'g', expiryDays: 30, lastAdded: '2026-06-18' },
   { item: 'Fresh Tomatoes', quantity: 2, unit: 'pcs', expiryDays: 7, lastAdded: '2026-06-19' },
@@ -25,14 +13,12 @@ export const DUMMY_INVENTORY: Omit<InventoryItem, 'id'>[] = [
 ];
 
 export function buildRagContent(item: Omit<InventoryItem, 'id'>, homeArea = 'Colombo'): string {
-  const key = item.item.toLowerCase().split(' ').pop() || item.item.toLowerCase();
-  const uses = Object.entries(SUGGESTED_USE).find(([k]) => key.includes(k) || item.item.toLowerCase().includes(k))?.[1] || ['General cooking'];
   return [
     `Home pantry item: ${item.item}`,
     `Quantity: ${item.quantity} ${item.unit}`,
-    `Shelf life: ${item.expiryDays} days`,
+    `Shelf life remaining: ${item.expiryDays} days`,
     `Last stocked: ${item.lastAdded}`,
-    `Good for: ${uses.join(', ')}`,
+    `Category: grocery ingredient for home cooking`,
     `Location: home pantry, ${homeArea}`,
   ].join('. ');
 }

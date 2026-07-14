@@ -443,6 +443,7 @@ export default function PlanArtifactView({
               const home = r.ingredients.filter((i) => i.source === 'inventory');
               const shop = r.ingredients.filter((i) => i.source === 'shopping');
               const fromMealDb = /^\d+$/.test(r.id);
+              const fromGoogle = r.id.startsWith('google_') || Boolean(r.sourceUrl);
               return (
                 <div key={r.id} className="rounded-2xl border border-[#BBF7D0] bg-[#FBFBFA] overflow-hidden">
                   {r.imageUrl ? (
@@ -460,6 +461,11 @@ export default function PlanArtifactView({
                           TheMealDB
                         </span>
                       )}
+                      {fromGoogle && !fromMealDb && (
+                        <span className="absolute bottom-2 left-2 text-[9px] font-mono uppercase tracking-wider bg-white/90 text-[#14532D] px-1.5 py-0.5 rounded">
+                          Google
+                        </span>
+                      )}
                     </div>
                   ) : null}
                   <div className="p-4 space-y-2">
@@ -467,6 +473,7 @@ export default function PlanArtifactView({
                     <p className="text-[10px] text-[#15803D]">
                       ~{r.prepTimeMin + r.cookTimeMin} min · {r.assignedCook}
                       {!r.imageUrl && fromMealDb ? ' · TheMealDB' : ''}
+                      {!r.imageUrl && fromGoogle && !fromMealDb ? ' · Google' : ''}
                     </p>
                     {home.length > 0 && (
                       <p className="text-[11px] text-[#16A34A]">

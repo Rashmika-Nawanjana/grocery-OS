@@ -33,6 +33,7 @@ async function prepareRequest(body: OrchestrationRequest, reqId: string) {
     ]);
     body.inventory = inventory;
     body.family = family;
+    body.userId = user.id;
     memoryForRequest = serverMemory;
     body.memory = body.memory ?? toSnapshot(serverMemory);
     planLog('api/plan', `Loaded user data — inventory: ${inventory.length}, family: ${family.length}`);

@@ -92,6 +92,8 @@ export interface Recipe {
   name: string;
   /** TheMealDB (or other) thumbnail URL when available. */
   imageUrl?: string;
+  /** Source page when recipe came from Google / web scrape. */
+  sourceUrl?: string;
   ingredients: { name: string; amount: number; unit: string; source: 'inventory' | 'shopping' }[];
   instructions: string[];
   prepTimeMin: number;
@@ -267,6 +269,8 @@ export interface OrchestrationRequest {
   budgetLkr?: number;
   inventory?: InventoryItem[];
   family?: FamilyMember[];
+  /** Authenticated user — enables vector inventory RAG RPC. */
+  userId?: string;
   previousScenario?: UserScenario;
   /** Prior turns in this session — used for follow-up context. */
   conversationHistory?: { role: 'user' | 'assistant'; text: string }[];
@@ -320,6 +324,8 @@ export interface AgentContext {
   inventory: InventoryItem[];
   /** Ranked pantry subset for prompts — matching still uses full `inventory`. */
   relevantPantry?: InventoryItem[];
+  /** Supabase user id for vector RAG lookups. */
+  userId?: string;
   family: FamilyMember[];
   decidedItems?: string[];
   recipeNames?: string[];

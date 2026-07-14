@@ -216,6 +216,7 @@ Classify every distinct food mentioned.`,
     `You classify Sri Lankan / South Asian home meals into roles.
 - cook: dishes prepared at home (curries, fried rice, kottu, mallung). Needs a recipe.
 - buy_ready: finished goods bought from a shop (bread, yoghurt, papadam, milk packets, store hoppers, pol roti packs). NEVER bake bread unless user says bake/make/homemade.
+- cook: when user says make/cook hoppers or appa, put hoppers under cook — not buy_ready.
 - unsure: only if truly ambiguous.
 Default for Sri Lankan homes: cook curries at home; buy bread and similar staples.
 Return JSON only.`,

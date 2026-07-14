@@ -57,7 +57,18 @@ export function extractNamedDishes(prompt: string): string[] {
   const dishes: string[] = [];
   if (/kottu|kothu/i.test(lower)) dishes.push('kottu roti');
   if (/fried\s*rice/i.test(lower)) dishes.push('fried rice');
-  if (/hoppers|appa/i.test(lower) && /\b(make|cook|prepare|homemade)\b/i.test(lower)) {
+  // Hoppers: only as a COOK dish when user says make/cook/prepare — otherwise meal-components may buy ready
+  if (
+    /string\s*hoppers|idiyappam/i.test(lower) &&
+    /\b(make|cook|prepare|homemade|steam)\b/i.test(lower) &&
+    !/\border\b/i.test(lower)
+  ) {
+    dishes.push('string hoppers');
+  } else if (
+    /\b(hoppers|appa)\b/i.test(lower) &&
+    /\b(make|cook|prepare|homemade)\b/i.test(lower) &&
+    !/\border\b/i.test(lower)
+  ) {
     dishes.push('hoppers');
   }
   if (/dhal|dal/i.test(lower)) dishes.push('dhal curry');
@@ -75,13 +86,35 @@ export function isDecidedCookIntent(prompt: string): boolean {
   if (isPreparedFoodOrderIntent(prompt)) return false;
   const lower = normalizeOrderTypos(prompt);
   return (
-    /\b(want to eat|i want to eat|eat .+ tonight|cook .+ tonight|make .+ tonight)\b/i.test(lower) ||
-    /\b(rice and|chicken curry|fish curry|dhal curry|fried rice|kottu)\b/i.test(lower)
+    /\b(want to eat|i want to eat|i want to make|want to make|eat .+ tonight|cook .+ tonight|make .+ tonight)\b/i.test(
+      lower
+    ) ||
+    /\b(rice and|chicken curry|fish curry|dhal curry|fried rice|kottu|hoppers|appa|string hoppers)\b/i.test(lower)
   );
+}
+
+/** True when a recipe name matches a dish the user asked to cook. */
+export function recipeMatchesNamedDish(recipe: { name: string }, dish: string): boolean {
+  const name = recipe.name.toLowerCase();
+  const d = dish.toLowerCase().trim();
+  if (!d) return false;
+  if (name === d || name.includes(d) || d.includes(name)) return true;
+  if (/string\s*hopper|idiyappam/i.test(d) && /string\s*hopper|idiyappam/i.test(name)) return true;
+  if (/hopper|appa/i.test(d) && /hopper|appa/i.test(name) && !/string/i.test(name)) return true;
+  if (/kottu|kothu/i.test(d) && /kottu|kothu/i.test(name)) return true;
+  if (/fried\s*rice/i.test(d) && /fried\s*rice/i.test(name)) return true;
+  if (/dhal|dal|parippu/i.test(d) && /dhal|dal|lentil|parippu/i.test(name)) return true;
+  if (/biriyani|biryani/i.test(d) && /biriyani|biryani/i.test(name)) return true;
+  if (/chicken\s*curry/i.test(d) && /chicken.*curry|curry.*chicken/i.test(name)) return true;
+  if (/fish\s*curry/i.test(d) && /fish.*curry/i.test(name)) return true;
+  return false;
 }
 
 /** Boost score when recipe name matches something the user asked for. */
 export function recipeMatchesUserPrompt(recipe: { name: string }, prompt: string): boolean {
+  const named = extractNamedDishes(prompt);
+  if (named.some((d) => recipeMatchesNamedDish(recipe, d))) return true;
+
   const lower = normalizeOrderTypos(prompt);
   const name = recipe.name.toLowerCase();
   if (/chicken\s*curry/i.test(lower) && /chicken.*curry|curry.*chicken/i.test(name)) return true;
@@ -89,6 +122,7 @@ export function recipeMatchesUserPrompt(recipe: { name: string }, prompt: string
   if (/kottu|kothu/i.test(lower) && /kottu|kothu/i.test(name)) return true;
   if (/fried\s*rice/i.test(lower) && /fried\s*rice/i.test(name)) return true;
   if (/dhal|dal/i.test(lower) && /dhal|dal/i.test(name)) return true;
+  if (/hopper|appa/i.test(lower) && /hopper|appa|idiyappam/i.test(name)) return true;
   if (/\brice\b/i.test(lower) && /steamed|white rice|^rice$/i.test(name) && !/fried|biriyani/i.test(name)) {
     return true;
   }

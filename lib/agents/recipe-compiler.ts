@@ -6,6 +6,7 @@ import {
   searchMealsByName,
 } from '@/lib/services/themealdb';
 import { applyPantryToRecipes } from '@/lib/services/pantry-match';
+import { fetchRecipesFromGoogle } from '@/lib/services/recipe-web-search';
 import { geminiJson } from '@/lib/services/gemini';
 import {
   buildSandwichRoutineRecipe,
@@ -22,11 +23,15 @@ import {
   isPantryMealSuggestionIntent,
   isPreparedFoodOrderIntent,
   mentionsHomeInventory,
+  recipeMatchesNamedDish,
+  recipeMatchesUserPrompt,
 } from '@/lib/orchestrator/meal-intent';
 import {
   assignCook,
   buildFriedRiceFromPantry,
+  buildHoppersFromPantry,
   buildLocalPantrySuggestions,
+  buildStringHoppersFromPantry,
   fallbackRecipe,
 } from '@/lib/agents/local-recipes';
 import {
@@ -88,6 +93,9 @@ export async function runRecipeCompiler(ctx: AgentContext): Promise<{ log: Agent
     ctx.relevantPantry?.length ? ctx.relevantPantry : ctx.inventory.slice(0, 10);
   const maxRecipes = pantryFirst || ctx.cookEffort === 'quick' ? 2 : 3;
 
+  // When the user named cook dishes, never fan out TheMealDB via pantry (Corba-for-hoppers bug)
+  const lockToNamedDishes = namedDishes.length > 0 && decidedCook;
+
   // Search TheMealDB for COOK dishes only — never for bread/yoghurt/etc.
   const searchPrompt =
     namedDishes.length > 0
@@ -97,8 +105,9 @@ export async function runRecipeCompiler(ctx: AgentContext): Promise<{ log: Agent
 
   let recipes = await fetchRecipesFromMealDb({
     prompt: searchPrompt,
-    inventory: ctx.inventory,
+    inventory: lockToNamedDishes ? [] : ctx.inventory,
     limit: 8,
+    nameOnly: lockToNamedDishes,
   });
 
   for (const dish of namedDishes.slice(0, 2)) {
@@ -117,12 +126,26 @@ export async function runRecipeCompiler(ctx: AgentContext): Promise<{ log: Agent
     return true;
   });
 
+  // Drop TheMealDB hits that don't match the named cook dishes
+  if (lockToNamedDishes && recipes.length) {
+    const matched = recipes.filter((r) =>
+      namedDishes.some((d) => recipeMatchesNamedDish(r, d) || recipeMatchesUserPrompt(r, userPrompt))
+    );
+    if (matched.length) {
+      recipes = matched;
+    } else {
+      log.message = `TheMealDB had no match for "${namedDishes.join(', ')}" — using local Sri Lankan templates.`;
+      recipes = [];
+    }
+  }
+
   log.message =
     recipes.length > 0
       ? `TheMealDB returned ${recipes.length} meal(s)${componentPlan ? ` (${componentPlan})` : ''}. Matching to pantry…`
-      : `TheMealDB had no hits${componentPlan ? ` — ${componentPlan}` : ''} — trying local pantry fallback…`;
+      : log.message ||
+        `TheMealDB had no hits${componentPlan ? ` — ${componentPlan}` : ''} — trying local pantry fallback…`;
 
-  if (recipes.length) {
+  if (recipes.length && !lockToNamedDishes) {
     const catalog = recipes.slice(0, 6).map((r) => ({
       id: r.id,
       name: r.name,
@@ -157,28 +180,48 @@ Serve ~${servings} people.${pantryFirst ? ' Prefer meals that use pantry items.'
     } else {
       recipes = recipes.slice(0, maxRecipes);
     }
+  } else if (recipes.length && lockToNamedDishes) {
+    // Keep only matching MealDB recipes — do not let Gemini swap to pantry-similar meals
+    recipes = recipes.slice(0, maxRecipes);
   }
 
-  if (!recipes.length && cookDishes.length) {
-    recipes = buildLocalPantrySuggestions(ctx, namedDishes.join(' ') || userPrompt);
+  if (!recipes.length) {
+    // Google web fallback before hardcoded local templates (hoppers, idiyappam, etc.)
+    const googleDishes =
+      namedDishes.length > 0
+        ? namedDishes
+        : extractNamedDishes(userPrompt).length
+          ? extractNamedDishes(userPrompt)
+          : [searchPrompt].filter(Boolean);
+    const fromGoogle = await fetchRecipesFromGoogle(googleDishes, {
+      servings,
+      prompt: userPrompt,
+    });
+    if (fromGoogle.length) {
+      recipes = fromGoogle.slice(0, maxRecipes);
+      log.message = `Google recipe fallback — ${recipes.map((r) => r.name).join(', ')}.`;
+    }
+  }
+
+  if (!recipes.length) {
+    recipes = buildLocalForNamedDishes(ctx, namedDishes, userPrompt);
+    if (!recipes.length && cookDishes.length) {
+      recipes = buildLocalPantrySuggestions(ctx, namedDishes.join(' ') || userPrompt);
+    }
     if (!recipes.length && /fried\s*rice/i.test(userPrompt)) {
       recipes = [buildFriedRiceFromPantry(ctx)];
     }
-    if (!recipes.length) recipes = [fallbackRecipe(ctx)];
-    log.message = `Used local pantry templates for cook dishes. ${recipes.length} recipe(s).`;
-  } else if (!recipes.length && !cookDishes.length && buyReady.length) {
-    // Only buy-ready items — no recipe needed
-    log.status = 'success';
-    log.message = `No cook dishes — shopping for ready items only: ${buyReady.map((b) => b.name).join(', ')}.`;
-    log.details = { buyReady: buyReady.map((b) => b.name), mealComponents };
-    return { log, recipes: [] };
-  } else if (!recipes.length) {
-    recipes = buildLocalPantrySuggestions(ctx, userPrompt);
-    if (!recipes.length && /fried\s*rice/i.test(userPrompt)) {
-      recipes = [buildFriedRiceFromPantry(ctx)];
+    if (!recipes.length && !cookDishes.length && buyReady.length) {
+      log.status = 'success';
+      log.message = `No cook dishes — shopping for ready items only: ${buyReady.map((b) => b.name).join(', ')}.`;
+      log.details = { buyReady: buyReady.map((b) => b.name), mealComponents };
+      return { log, recipes: [] };
     }
-    if (!recipes.length) recipes = [fallbackRecipe(ctx)];
-    log.message = `Used local pantry templates (TheMealDB unavailable). ${recipes.length} recipe(s).`;
+    if (!recipes.length) {
+      recipes = buildLocalPantrySuggestions(ctx, userPrompt);
+      if (!recipes.length) recipes = [fallbackRecipe(ctx)];
+    }
+    log.message = `Used local Sri Lankan templates for ${namedDishes.join(', ') || 'meal'}. ${recipes.length} recipe(s).`;
   }
 
   // Attach buy-ready staples as shopping ingredients on the main recipe (or a side holder)
@@ -217,9 +260,9 @@ Serve ~${servings} people.${pantryFirst ? ' Prefer meals that use pantry items.'
     }
   }
 
-  recipes = applyPantryToRecipes(matchInventoryToRecipes(recipes, ctx.inventory), ctx.inventory)
+  recipes = (await applyPantryToRecipes(matchInventoryToRecipes(recipes, ctx.inventory), ctx.inventory))
     .map(normalizeRecipe)
-    .filter((r) => !isExoticRecipe(r) || r.id === 'buy_ready_sides')
+    .filter((r) => !isExoticRecipe(r) || r.id === 'buy_ready_sides' || r.id.startsWith('google_'))
     .slice(0, Math.max(maxRecipes, buyReady.length ? 1 : maxRecipes));
 
   const cook = assignCook(ctx);
@@ -229,16 +272,20 @@ Serve ~${servings} people.${pantryFirst ? ' Prefer meals that use pantry items.'
   }));
 
   const fromMealDb = recipes.filter((r) => /^\d+$/.test(r.id)).length;
+  const fromGoogle = recipes.filter((r) => r.id.startsWith('google_')).length;
   const withImages = recipes.filter((r) => Boolean(r.imageUrl)).length;
 
   log.status = 'success';
-  log.message = `Compiled ${recipes.length} recipe(s) — ${fromMealDb} from TheMealDB${withImages ? `, ${withImages} with photos` : ''}${
+  log.message = `Compiled ${recipes.length} recipe(s) — ${fromMealDb} TheMealDB, ${fromGoogle} Google${withImages ? `, ${withImages} with photos` : ''}${
     buyReady.length ? `; buy ready: ${buyReady.map((b) => b.name).join(', ')}` : ''
   }. ${recipes.filter((r) => r.ingredients.some((i) => i.source === 'inventory')).length} use home inventory.`;
   log.details = {
     recipeNames: recipes.map((r) => r.name),
     imageUrls: recipes.map((r) => r.imageUrl).filter(Boolean),
-    sources: recipes.map((r) => (/^\d+$/.test(r.id) ? 'TheMealDB' : 'local')),
+    sourceUrls: recipes.map((r) => r.sourceUrl).filter(Boolean),
+    sources: recipes.map((r) =>
+      /^\d+$/.test(r.id) ? 'TheMealDB' : r.id.startsWith('google_') ? 'Google' : 'local'
+    ),
     mealComponents,
     componentPlan,
     relevantPantry: (ctx.relevantPantry ?? []).slice(0, 8).map((i) => i.item),
@@ -246,6 +293,33 @@ Serve ~${servings} people.${pantryFirst ? ' Prefer meals that use pantry items.'
   };
 
   return { log, recipes };
+}
+
+/** Prefer explicit local templates for SL dishes TheMealDB doesn't carry. */
+function buildLocalForNamedDishes(
+  ctx: import('@/lib/types').AgentContext,
+  namedDishes: string[],
+  userPrompt: string
+): Recipe[] {
+  const prompt = namedDishes.join(' ') || userPrompt;
+  const lower = prompt.toLowerCase();
+  const out: Recipe[] = [];
+  const servings = extractFamilySize(userPrompt) ?? 4;
+
+  if (/string\s*hopper|idiyappam/i.test(lower)) {
+    out.push(buildStringHoppersFromPantry(ctx, servings));
+  } else if (/hopper|appa/i.test(lower)) {
+    out.push(buildHoppersFromPantry(ctx, servings));
+  }
+
+  if (out.length) return out;
+  return buildLocalPantrySuggestions(ctx, prompt);
+}
+
+/** Tap water shouldn't become a shop line; salt pinches stay off the list. */
+function isFreeStaple(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return n === 'water' || n === 'tap water' || n === 'salt' || n === 'sea salt';
 }
 
 function normalizeRecipe(recipe: Recipe): Recipe {
@@ -256,10 +330,17 @@ function normalizeRecipe(recipe: Recipe): Recipe {
     imageUrl: recipe.imageUrl || undefined,
     prepTimeMin: Number.isFinite(prep) ? Math.min(120, Math.max(0, prep)) : 15,
     cookTimeMin: Number.isFinite(cook) ? Math.min(120, Math.max(0, cook)) : 20,
-    ingredients: recipe.ingredients.map((ing) => ({
-      ...ing,
-      amount: safeQuantity(ing.amount, ing.unit),
-      unit: ing.unit || 'pcs',
-    })),
+    ingredients: recipe.ingredients
+      .filter((ing) => {
+        // Drop pure water from shopping lists entirely
+        if (/^water$/i.test(ing.name.trim()) && ing.source === 'shopping') return false;
+        return true;
+      })
+      .map((ing) => ({
+        ...ing,
+        amount: safeQuantity(ing.amount, ing.unit),
+        unit: ing.unit || 'pcs',
+        source: isFreeStaple(ing.name) ? ('inventory' as const) : ing.source,
+      })),
   };
 }

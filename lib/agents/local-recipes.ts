@@ -173,24 +173,109 @@ function buildBrinjalCurryFromPantry(ctx: AgentContext, servings = 4): Recipe {
   };
 }
 
+function buildHoppersFromPantry(ctx: AgentContext, servings = 4): Recipe {
+  const has = (term: string) => ctx.inventory.some((i) => i.item.toLowerCase().includes(term));
+  const ing = (name: string, amount: number, unit: string, pantryKey: string | null) => ({
+    name,
+    amount,
+    unit,
+    // Free staples (water) never go on the shop list
+    source: (pantryKey === null || has(pantryKey) ? 'inventory' : 'shopping') as 'inventory' | 'shopping',
+  });
+
+  const eggHoppers = /\begg\b/i.test(ctx.userPrompt || ctx.prompt || '');
+
+  return {
+    id: 'local_hoppers',
+    name: eggHoppers ? 'Egg Hoppers (Appa)' : 'Plain Hoppers (Appa)',
+    ingredients: [
+      ing('Rice Flour', 300, 'g', 'flour'),
+      ing('Coconut Milk', 400, 'ml', 'coconut'),
+      // Always treat as at home — don't charge for tap water
+      ing('Water', 200, 'ml', null),
+      ing('Salt', 1, 'tsp', 'salt'),
+      ing('Yeast', 1, 'tsp', 'yeast'),
+      ...(eggHoppers ? [ing('Eggs', Math.max(2, servings), 'pcs', 'egg')] : []),
+      ing('Coconut Oil', 1, 'tbsp', 'oil'),
+    ],
+    instructions: [
+      'Mix rice flour, coconut milk, water, salt, and yeast into a thin batter. Rest 30–60 minutes until slightly fermented.',
+      'Heat a hopper pan (appa kal) and lightly oil it.',
+      'Pour a ladle of batter, swirl to coat the sides, cover and steam until the centre sets and edges crisp.',
+      eggHoppers
+        ? 'For egg hoppers, crack an egg into the centre before covering.'
+        : 'Serve plain hoppers hot with lunu miris, pol sambol, or a curry.',
+      `Makes about ${servings * 2} hoppers for ${servings} people.`,
+    ],
+    prepTimeMin: 40,
+    cookTimeMin: 25,
+    assignedCook: assignCook(ctx),
+    reasonForSelection: 'You asked for hoppers — local Sri Lankan appa recipe (TheMealDB has no hoppers).',
+    dietaryTags: ['Sri Lankan', 'Hoppers', eggHoppers ? 'Egg' : 'Vegetarian'].filter(Boolean),
+    nutritionalInfo: { calories: 280, protein: eggHoppers ? '12g' : '6g', sugar: '2g', fat: '8g' },
+  };
+}
+
+function buildStringHoppersFromPantry(ctx: AgentContext, servings = 4): Recipe {
+  const has = (term: string) => ctx.inventory.some((i) => i.item.toLowerCase().includes(term));
+  const ing = (name: string, amount: number, unit: string, pantryKey: string | null) => ({
+    name,
+    amount,
+    unit,
+    source: (pantryKey === null || has(pantryKey) ? 'inventory' : 'shopping') as 'inventory' | 'shopping',
+  });
+
+  return {
+    id: 'local_string_hoppers',
+    name: 'String Hoppers (Idiyappam)',
+    ingredients: [
+      ing('Rice Flour', 400, 'g', 'flour'),
+      ing('Water', 300, 'ml', null),
+      ing('Salt', 1, 'tsp', 'salt'),
+      ing('Fresh Coconut', 100, 'g', 'coconut'),
+    ],
+    instructions: [
+      'Knead rice flour with hot water and salt into a soft dough.',
+      'Press through an idiyappam press onto steamer mats.',
+      'Steam 5–8 minutes until cooked through.',
+      'Serve with pol sambol, kiri hodi, or curry.',
+    ],
+    prepTimeMin: 20,
+    cookTimeMin: 15,
+    assignedCook: assignCook(ctx),
+    reasonForSelection: 'You asked for string hoppers — local idiyappam plan.',
+    dietaryTags: ['Sri Lankan', 'String hoppers', 'Vegetarian'],
+    nutritionalInfo: { calories: 250, protein: '5g', sugar: '1g', fat: '4g' },
+  };
+}
+
 /** Build Sri Lankan suggestions from pantry — no TheMealDB. */
 export function buildLocalPantrySuggestions(ctx: AgentContext, prompt: string): Recipe[] {
   const servings = extractFamilySize(prompt) ?? 4;
   const lower = normalizeOrderTypos(prompt);
-  const has = (term: string) => ctx.inventory.some((i) => i.item.toLowerCase().includes(term));
+  // Prefer vector-ranked relevant pantry when available
+  const shelf = ctx.relevantPantry?.length ? ctx.relevantPantry : ctx.inventory;
+  const has = (term: string) => shelf.some((i) => i.item.toLowerCase().includes(term));
   const out: Recipe[] = [];
+
+  // Decided local dishes first — never lose to random pantry templates
+  if (/string\s*hoppers|idiyappam/i.test(lower)) {
+    out.push(buildStringHoppersFromPantry(ctx, servings));
+  } else if (/hopper|appa/i.test(lower)) {
+    out.push(buildHoppersFromPantry(ctx, servings));
+  }
 
   if (/chicken\s*curry/i.test(lower) || (/chicken/i.test(lower) && /curry/i.test(lower))) {
     out.push(buildChickenCurryFromPantry(ctx, servings));
   }
-  if (/\brice\b/i.test(lower) && !/fried|biriyani|biryani/i.test(lower)) {
+  if (/\brice\b/i.test(lower) && !/fried|biriyani|biryani|flour|hopper/i.test(lower)) {
     out.push(buildSteamedRiceFromPantry(ctx, servings));
   }
   if (/kottu|kothu/i.test(lower)) out.push(buildKottuFromPantry(ctx, servings));
   if (/fried\s*rice/i.test(lower)) out.push(buildFriedRiceFromPantry(ctx));
   if (has('eggplant') || has('brinjal') || has('wambatu')) out.push(buildBrinjalCurryFromPantry(ctx, servings));
-  if (has('egg')) out.push(buildEggCurryFromPantry(ctx, servings));
-  if (has('dhal') || has('dal')) out.push(fallbackRecipe(ctx));
+  if (has('egg') && !/hopper/i.test(lower)) out.push(buildEggCurryFromPantry(ctx, servings));
+  if ((has('dhal') || has('dal')) && !/hopper/i.test(lower)) out.push(fallbackRecipe(ctx));
 
   if (!out.length) {
     if (has('rice')) out.push(fallbackRecipe(ctx));
@@ -263,4 +348,4 @@ function fallbackRecipe(ctx: AgentContext): Recipe {
   };
 }
 
-export { buildFriedRiceFromPantry, fallbackRecipe, assignCook };
+export { buildFriedRiceFromPantry, buildHoppersFromPantry, buildStringHoppersFromPantry, fallbackRecipe, assignCook };

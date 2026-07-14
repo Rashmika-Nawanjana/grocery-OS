@@ -198,6 +198,11 @@ async function fetchPage(url: string, timeoutMs: number): Promise<string | null>
   return null;
 }
 
+/** Public scrape helper for recipe pages / non-store URLs. */
+export async function fetchPageContent(url: string, timeoutMs = 12_000): Promise<string | null> {
+  return fetchPage(url, timeoutMs);
+}
+
 function providerLabel(): StorePriceSource['provider'] {
   if (process.env.FIRECRAWL_API_KEY) return 'firecrawl';
   if (process.env.SCRAPE_DO_TOKEN) return 'scrape.do';

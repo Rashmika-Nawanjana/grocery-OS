@@ -228,7 +228,7 @@ export function curateMealPlan(input: {
   cookEffort?: 'quick' | 'normal';
   mealMode?: 'cook_pantry' | 'cook_shop' | 'order' | 'eat_out';
 }): { recipes: Recipe[]; meta: PlanCurationMeta | undefined } {
-  if (input.isMealRoutine || input.recipes.length <= 1) {
+  if (input.isMealRoutine) {
     return { recipes: input.recipes, meta: undefined };
   }
 
@@ -241,7 +241,8 @@ export function curateMealPlan(input: {
   const period = inferMealPeriod();
   const weatherContext = describeWeather(input.weather);
 
-  if (decidedCook && input.recipes.length > 1) {
+  // Decided dish: never keep a single mismatched MealDB recipe (e.g. Corba for hoppers)
+  if (decidedCook) {
     const userMatched = input.recipes.filter(
       (r) => recipeMatchesUserPrompt(r, input.prompt) && !isExoticRecipe(r)
     );
@@ -269,6 +270,10 @@ export function curateMealPlan(input: {
         },
       };
     }
+  }
+
+  if (input.recipes.length <= 1) {
+    return { recipes: input.recipes, meta: undefined };
   }
 
   let ranked = rankRecipes(input.recipes, input.prices, input.budgetLkr, input.weather, period, input.prompt).filter(

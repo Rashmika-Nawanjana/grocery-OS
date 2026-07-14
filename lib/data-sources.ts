@@ -32,7 +32,7 @@ export function collectOrchestrationSources(input: {
     add({
       agentId: 'inventory-rag',
       agentName: 'Agent 1: Home Inventory RAG',
-      label: 'Supabase pantry (pgvector rank + keyword relevance)',
+      label: 'Supabase pantry + pgvector / embedding RAG ranking',
       url: input.supabaseUrl || undefined,
       kind: 'database',
     });
@@ -53,6 +53,13 @@ export function collectOrchestrationSources(input: {
       url: VERTEX_DOC,
       kind: 'ai',
     });
+    add({
+      agentId: 'recipe-compiler',
+      agentName: 'Agent 2: Recipe Compiler',
+      label: 'Google recipe search (SerpAPI) — fallback when TheMealDB misses',
+      url: 'https://serpapi.com',
+      kind: 'scrape',
+    });
     for (const r of input.recipes) {
       if (r.id && /^\d+$/.test(r.id)) {
         add({
@@ -61,6 +68,14 @@ export function collectOrchestrationSources(input: {
           label: `Recipe: ${r.name}`,
           url: `${THEMEALDB}/meal/${r.id}`,
           kind: 'api',
+        });
+      } else if (r.sourceUrl) {
+        add({
+          agentId: 'recipe-compiler',
+          agentName: 'Agent 2: Recipe Compiler',
+          label: `Google recipe: ${r.name}`,
+          url: r.sourceUrl,
+          kind: 'scrape',
         });
       }
     }

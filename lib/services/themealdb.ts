@@ -143,10 +143,13 @@ export async function searchMealsByArea(area: string, limit = 4): Promise<Recipe
 
 function extractFoodTerm(query: string): string {
   const lower = query.toLowerCase();
+  if (/string\s*hoppers|idiyappam/.test(lower)) return 'string hoppers';
+  if (/hoppers|appa/.test(lower)) return 'hoppers';
   if (/fried\s*rice/.test(lower)) return 'fried rice';
   if (/chicken\s*curry/.test(lower)) return 'chicken curry';
   if (/biryani|biriyani/.test(lower)) return 'biryani';
   if (/kottu|kothu/.test(lower)) return 'chicken';
+  if (/dhal|dal|parippu/.test(lower)) return 'lentil';
   const foods = [
     'chicken',
     'rice',
@@ -203,14 +206,23 @@ function dedupeRecipes(recipes: Recipe[]): Recipe[] {
 
 /**
  * Primary recipe fetch for meal planning — TheMealDB first (name + pantry ingredients + area).
+ * When `nameOnly` is true (decided dish), never widen via pantry/area — avoids Corba-for-hoppers.
  */
 export async function fetchRecipesFromMealDb(opts: {
   prompt: string;
   inventory: InventoryItem[];
   limit?: number;
+  /** Only search by dish name — skip pantry ingredient + area fan-out. */
+  nameOnly?: boolean;
 }): Promise<Recipe[]> {
   const limit = opts.limit ?? 6;
   const term = extractFoodTerm(opts.prompt);
+
+  if (opts.nameOnly) {
+    const byName = await searchMealsByName(term, limit);
+    return byName.slice(0, limit);
+  }
+
   const pantryIngredients = pantryToMealDbIngredients(opts.inventory);
 
   const batches = await Promise.all([
